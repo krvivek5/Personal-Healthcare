@@ -24,7 +24,7 @@ We aim to solve this by giving each person an AI that:
 
 The initial focus is people who actively manage ongoing, recurring, chronic, or multiple health concerns and therefore accumulate meaningful health information over time.
 
-The product should prioritize situations where **longitudinal [word: continuing across a long period of time] context** can materially improve the user's understanding and ability to manage care.
+The product should prioritize situations where **longitudinal context** can materially improve the user's understanding and ability to manage care.
 
 ---
 
