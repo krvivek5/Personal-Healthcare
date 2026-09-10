@@ -12,12 +12,14 @@ export const ConditionsList: React.FC = () => {
   const [name, setName] = useState('')
   const [status, setStatus] = useState<'active' | 'resolved'>('active')
   const [isChronic, setIsChronic] = useState(false)
+  const [startedAt, setStartedAt] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
 
   // Edit state
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editStatus, setEditStatus] = useState<'active' | 'resolved'>('active')
   const [editIsChronic, setEditIsChronic] = useState(false)
+  const [editStartedAt, setEditStartedAt] = useState('')
 
   useEffect(() => {
     if (!session?.access_token) return
@@ -54,12 +56,14 @@ export const ConditionsList: React.FC = () => {
         name: name.trim(),
         status,
         is_chronic: isChronic,
+        ...(startedAt ? { started_at: startedAt } : {}),
       }
       const newCondition = await conditionsApi.create(session.access_token, payload)
       setConditions([...conditions, newCondition])
       setName('')
       setStatus('active')
       setIsChronic(false)
+      setStartedAt('')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to add condition')
     } finally {
@@ -82,6 +86,7 @@ export const ConditionsList: React.FC = () => {
     setEditingId(condition.id)
     setEditStatus(condition.status)
     setEditIsChronic(condition.is_chronic)
+    setEditStartedAt(condition.started_at || '')
   }
 
   const cancelEdit = () => {
@@ -95,6 +100,7 @@ export const ConditionsList: React.FC = () => {
       const payload: ConditionUpdate = {
         status: editStatus,
         is_chronic: editIsChronic,
+        ...(editStartedAt ? { started_at: editStartedAt } : {}),
       }
       const updatedCondition = await conditionsApi.update(session.access_token, id, payload)
       setConditions(conditions.map(c => c.id === id ? updatedCondition : c))
@@ -137,6 +143,16 @@ export const ConditionsList: React.FC = () => {
           </select>
         </div>
         <div>
+          <label className="block text-sm">Started At</label>
+          <input
+            type="date"
+            data-testid="input-condition-started-at"
+            value={startedAt}
+            onChange={(e) => setStartedAt(e.target.value)}
+            className="border p-2 rounded"
+          />
+        </div>
+        <div>
           <label className="block text-sm flex items-center gap-1">
             <input
               type="checkbox"
@@ -175,6 +191,13 @@ export const ConditionsList: React.FC = () => {
                     <option value="active">Active</option>
                     <option value="resolved">Resolved</option>
                   </select>
+                  <input
+                    type="date"
+                    data-testid={`edit-condition-started-at-${condition.id}`}
+                    value={editStartedAt}
+                    onChange={(e) => setEditStartedAt(e.target.value)}
+                    className="border p-1 rounded"
+                  />
                   <label className="flex items-center gap-1">
                     <input
                       type="checkbox"

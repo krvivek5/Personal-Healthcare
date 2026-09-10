@@ -449,3 +449,33 @@ export const documentsApi = {
     request<void>('DELETE', `/documents/${id}`, token),
 }
 
+// ─── Timeline Domain Types & API ─────────────────────────────────────────────
+
+export type HealthEventType =
+  | 'CONDITION_STARTED'
+  | 'CONDITION_RESOLVED'
+  | 'SYMPTOM_RECORDED'
+  | 'MEDICATION_STARTED'
+  | 'MEDICATION_STOPPED'
+  | 'DOCUMENT_DATED'
+  | 'DOCUMENT_UPLOADED'
+  | 'GOAL_RECORDED'
+
+export type HealthEventState = 'current' | 'historical' | 'neutral'
+export type HealthSourceType = 'CONDITION' | 'SYMPTOM' | 'MEDICATION' | 'DOCUMENT' | 'GOAL'
+
+export interface HealthEvent {
+  event_date: string
+  event_type: HealthEventType | string
+  event_state: HealthEventState
+  title: string
+  description: string | null
+  source_type: HealthSourceType | string
+  source_id: string
+}
+
+export const timelineApi = {
+  getTimeline: (token: string): Promise<HealthEvent[]> =>
+    request<HealthEvent[]>('GET', '/timeline', token),
+}
+

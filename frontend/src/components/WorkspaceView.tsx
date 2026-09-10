@@ -7,6 +7,7 @@ import { MedicationsList } from './MedicationsList'
 import { AllergiesList } from './AllergiesList'
 import { GoalsList } from './GoalsList'
 import { DocumentsList } from './DocumentsList'
+import { TimelineView } from './TimelineView'
 
 export const WorkspaceView: React.FC = () => {
   const { user, isAnonymous, isLoading, convertToPermanent, signOut, clearAnonymousSession, error } = useAuth()
@@ -101,6 +102,9 @@ export const WorkspaceView: React.FC = () => {
 
       <hr style={{ borderTop: '1px solid #e2e8f0', margin: '2rem 0' }} />
       <HealthProfileView />
+
+      <hr style={{ borderTop: '1px solid #e2e8f0', margin: '2rem 0' }} />
+      <TimelineView />
 
       <hr style={{ borderTop: '1px solid #e2e8f0', margin: '2rem 0' }} />
       <div style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>

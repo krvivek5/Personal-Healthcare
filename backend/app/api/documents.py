@@ -40,9 +40,9 @@ from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core import storage
 from app.core.auth import AuthenticatedUser, get_current_user
 from app.core.file_validation import validate_upload
-from app.core import storage
 from app.db.session import get_db
 from app.health.documents import (
     create_document,
@@ -83,7 +83,7 @@ def _safe_content_disposition(filename: str) -> str:
     from urllib.parse import quote
 
     encoded = quote(safe, safe="!#$&+-.^_`|~")
-    return f'attachment; filename="{safe}"; filename*=UTF-8\'\'{encoded}'
+    return f"attachment; filename=\"{safe}\"; filename*=UTF-8''{encoded}"
 
 
 # ── Endpoints ──────────────────────────────────────────────────────────────────

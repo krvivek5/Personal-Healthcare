@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import io
 import uuid
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 from httpx import AsyncClient
@@ -75,6 +75,7 @@ def _patched_s3(
     delete_side_effect=None,
 ):
     """Context manager patches for storage functions."""
+
     async def _fake_upload(key, data, ct):
         if upload_side_effect:
             raise upload_side_effect
@@ -86,7 +87,7 @@ def _patched_s3(
         return None
 
     async def _fake_download(key):
-        for chunk in (download_chunks or [b"fake pdf bytes"]):
+        for chunk in download_chunks or [b"fake pdf bytes"]:
             yield chunk
 
     return (
@@ -347,7 +348,9 @@ async def test_mime_magic_mismatch_returns_422(async_client: AsyncClient):
         resp = await async_client.post(
             "/api/v1/documents",
             headers=_headers(token),
-            files=_make_upload(content=_JPEG_MAGIC + b"data", content_type="application/pdf"),
+            files=_make_upload(
+                content=_JPEG_MAGIC + b"data", content_type="application/pdf"
+            ),
             data={"document_type": "lab_report"},
         )
     assert resp.status_code == 422

@@ -17,6 +17,7 @@ import {
   medicationsApi,
   allergiesApi,
   goalsApi,
+  timelineApi,
 } from './api'
 
 const MOCK_TOKEN = 'test-bearer-token'
@@ -311,5 +312,15 @@ describe('request body is JSON-serialized correctly', () => {
     await medicationsApi.list(MOCK_TOKEN)
     const { init } = lastFetchArgs()
     expect(init.body).toBeUndefined()
+  })
+
+  it('timelineApi.getTimeline attaches Bearer token and calls /timeline', async () => {
+    mockFetchOk([])
+    await timelineApi.getTimeline(MOCK_TOKEN)
+    const { url, init } = lastFetchArgs()
+    expect(url).toContain('/timeline')
+    expect(init.headers).toMatchObject({
+      Authorization: `Bearer ${MOCK_TOKEN}`,
+    })
   })
 })

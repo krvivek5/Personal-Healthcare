@@ -9,6 +9,7 @@ from app.schemas.health_profile import (
     HealthProfileResponse,
     HealthProfileUpdate,
 )
+from app.schemas.timeline import HealthEvent
 
 __all__ = [
     "ConditionBase",
@@ -18,4 +19,5 @@ __all__ = [
     "HealthProfileBase",
     "HealthProfileResponse",
     "HealthProfileUpdate",
+    "HealthEvent",
 ]

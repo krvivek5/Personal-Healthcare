@@ -14,6 +14,7 @@ export const MedicationsList: React.FC = () => {
   const [frequency, setFrequency] = useState('')
   const [status, setStatus] = useState<'active' | 'stopped'>('active')
   const [asNeeded, setAsNeeded] = useState(false)
+  const [startedAt, setStartedAt] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
 
   // Edit state
@@ -61,6 +62,7 @@ export const MedicationsList: React.FC = () => {
         frequency: frequency.trim() || null,
         status,
         as_needed: asNeeded,
+        ...(startedAt ? { started_at: startedAt } : {}),
       }
       const newMed = await medicationsApi.create(session.access_token, payload)
       setMedications([...medications, newMed])
@@ -69,6 +71,7 @@ export const MedicationsList: React.FC = () => {
       setFrequency('')
       setStatus('active')
       setAsNeeded(false)
+      setStartedAt('')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to add medication')
     } finally {
@@ -170,6 +173,16 @@ export const MedicationsList: React.FC = () => {
             <option value="active">Active</option>
             <option value="stopped">Stopped</option>
           </select>
+        </div>
+        <div>
+          <label className="block text-sm">Started At</label>
+          <input
+            type="date"
+            data-testid="input-med-started-at"
+            value={startedAt}
+            onChange={(e) => setStartedAt(e.target.value)}
+            className="border p-2 rounded"
+          />
         </div>
         <div>
           <label className="block text-sm flex items-center gap-1">
