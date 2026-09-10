@@ -6,6 +6,7 @@ import { SymptomsList } from './SymptomsList'
 import { MedicationsList } from './MedicationsList'
 import { AllergiesList } from './AllergiesList'
 import { GoalsList } from './GoalsList'
+import { DocumentsList } from './DocumentsList'
 
 export const WorkspaceView: React.FC = () => {
   const { user, isAnonymous, isLoading, convertToPermanent, signOut, clearAnonymousSession, error } = useAuth()
@@ -108,6 +109,7 @@ export const WorkspaceView: React.FC = () => {
         <MedicationsList />
         <AllergiesList />
         <GoalsList />
+        <DocumentsList />
       </div>
 
       {/* Convert to Permanent Account Modal */}

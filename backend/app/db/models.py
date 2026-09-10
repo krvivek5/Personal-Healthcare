@@ -4,6 +4,7 @@ from decimal import Decimal
 from typing import Optional
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     Date,
     DateTime,
@@ -76,6 +77,11 @@ class Patient(Base):
     )
     goals: Mapped[list["PatientGoal"]] = relationship(
         "PatientGoal",
+        back_populates="patient",
+        cascade="all, delete-orphan",
+    )
+    documents: Mapped[list["MedicalDocument"]] = relationship(
+        "MedicalDocument",
         back_populates="patient",
         cascade="all, delete-orphan",
     )
@@ -470,4 +476,87 @@ class PatientGoal(Base):
     patient: Mapped["Patient"] = relationship(
         "Patient",
         back_populates="goals",
+    )
+
+
+class MedicalDocument(Base):
+    """Medical document uploaded by a patient.
+
+    The original file is stored in S3 under storage_key.
+    storage_key is internal and must never be exposed to API clients.
+    """
+
+    __tablename__ = "medical_documents"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+    patient_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("patients.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    file_name: Mapped[str] = mapped_column(
+        String(255),
+        nullable=False,
+    )
+    display_name: Mapped[str] = mapped_column(
+        String(255),
+        nullable=False,
+    )
+    document_type: Mapped[str] = mapped_column(
+        String(50),
+        nullable=False,
+    )
+    content_type: Mapped[str] = mapped_column(
+        String(100),
+        nullable=False,
+    )
+    file_size_bytes: Mapped[int] = mapped_column(
+        BigInteger,
+        nullable=False,
+    )
+    # Internal S3 object key — NEVER exposed to API clients.
+    storage_key: Mapped[str] = mapped_column(
+        String(500),
+        nullable=False,
+    )
+    document_date: Mapped[Optional[date]] = mapped_column(
+        Date,
+        nullable=True,
+    )
+    notes: Mapped[Optional[str]] = mapped_column(
+        Text,
+        nullable=True,
+    )
+    source_type: Mapped[str] = mapped_column(
+        String(50),
+        nullable=False,
+        default="PATIENT_REPORTED",
+        server_default="PATIENT_REPORTED",
+    )
+    uploaded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    # Relationship
+    patient: Mapped["Patient"] = relationship(
+        "Patient",
+        back_populates="documents",
     )

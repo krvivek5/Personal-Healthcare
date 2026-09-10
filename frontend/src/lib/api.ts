@@ -345,3 +345,107 @@ export const goalsApi = {
   delete: (token: string, id: string): Promise<void> =>
     request<void>('DELETE', `/goals/${id}`, token),
 }
+
+// ─── Documents ────────────────────────────────────────────────────────────────
+
+export type DocumentType =
+  | 'lab_report'
+  | 'prescription'
+  | 'diagnostic_report'
+  | 'discharge_summary'
+  | 'medical_record'
+  | 'other'
+
+export interface MedicalDocument {
+  id: string
+  patient_id: string
+  file_name: string
+  display_name: string
+  document_type: DocumentType
+  content_type: string
+  file_size_bytes: number
+  document_date: string | null
+  notes: string | null
+  source_type: string
+  uploaded_at: string
+  created_at: string
+  updated_at: string
+}
+
+export interface DocumentUploadParams {
+  document_type: DocumentType
+  display_name?: string
+  document_date?: string | null
+  notes?: string | null
+}
+
+export interface DocumentUpdate {
+  display_name?: string
+  document_type?: DocumentType
+  document_date?: string | null
+  notes?: string | null
+}
+
+export const documentsApi = {
+  list: (token: string): Promise<MedicalDocument[]> =>
+    request<MedicalDocument[]>('GET', '/documents', token),
+
+  get: (token: string, id: string): Promise<MedicalDocument> =>
+    request<MedicalDocument>('GET', `/documents/${id}`, token),
+
+  upload: async (
+    token: string,
+    file: File,
+    params: DocumentUploadParams,
+  ): Promise<MedicalDocument> => {
+    const form = new FormData()
+    form.append('file', file)
+    form.append('document_type', params.document_type)
+    if (params.display_name) form.append('display_name', params.display_name)
+    if (params.document_date) form.append('document_date', params.document_date)
+    if (params.notes) form.append('notes', params.notes)
+
+    const response = await fetch(`${API_V1}/documents`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      body: form,
+    })
+
+    if (!response.ok) {
+      let message = response.statusText
+      try {
+        const data = await response.json()
+        message = data?.detail ?? data?.message ?? message
+      } catch {
+        // ignore JSON parse error
+      }
+      throw new ApiError(response.status, message)
+    }
+    return response.json() as Promise<MedicalDocument>
+  },
+
+  download: async (token: string, id: string): Promise<Blob> => {
+    const response = await fetch(`${API_V1}/documents/${id}/download`, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    if (!response.ok) {
+      let message = response.statusText
+      try {
+        const data = await response.json()
+        message = data?.detail ?? data?.message ?? message
+      } catch {
+        // ignore
+      }
+      throw new ApiError(response.status, message)
+    }
+    return response.blob()
+  },
+
+  update: (token: string, id: string, data: DocumentUpdate): Promise<MedicalDocument> =>
+    request<MedicalDocument>('PATCH', `/documents/${id}`, token, data),
+
+  delete: (token: string, id: string): Promise<void> =>
+    request<void>('DELETE', `/documents/${id}`, token),
+}
+

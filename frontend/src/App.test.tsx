@@ -72,6 +72,27 @@ describe('App Workspace & Progressive Identity Experience', () => {
     })
   })
 
+  // M4-7: Focused integration test — DocumentsList renders in authenticated workspace
+  it('renders DocumentsList in the authenticated workspace', async () => {
+    vi.mocked(supabase.auth.getSession).mockResolvedValueOnce({
+      data: { session: createMockSession('auth-user-test-uuid', false) },
+      error: null,
+    })
+
+    render(<App />)
+
+    await waitFor(() => {
+      expect(screen.getByTestId('workspace-view')).toBeInTheDocument()
+    })
+
+    // DocumentsList is mounted (shows loading state or empty state)
+    const docsEl =
+      screen.queryByTestId('documents-list') ??
+      screen.queryByTestId('documents-loading')
+    expect(docsEl).not.toBeNull()
+  })
+
+
   it('opens account conversion modal when user clicks Protect Workspace', async () => {
     vi.mocked(supabase.auth.getSession).mockResolvedValueOnce({
       data: { session: createMockSession('anon-user-test-uuid', true) },
