@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.allergies import router as allergies_router
 from app.api.auth import router as auth_router
 from app.api.conditions import router as conditions_router
 from app.api.health import router as health_router
@@ -24,6 +25,7 @@ app.add_middleware(
 )
 
 app.include_router(health_router, prefix=settings.API_V1_STR)
+app.include_router(allergies_router, prefix=settings.API_V1_STR)
 app.include_router(auth_router, prefix=settings.API_V1_STR)
 app.include_router(health_profile_router, prefix=settings.API_V1_STR)
 app.include_router(conditions_router, prefix=settings.API_V1_STR)
