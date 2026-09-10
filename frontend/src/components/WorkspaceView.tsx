@@ -1,5 +1,6 @@
 import React, { useState } from 'react'
 import { useAuth } from '../context/AuthContext'
+import { HealthProfileView } from './HealthProfileView'
 
 export const WorkspaceView: React.FC = () => {
   const { user, isAnonymous, isLoading, convertToPermanent, signOut, clearAnonymousSession, error } = useAuth()
@@ -91,6 +92,9 @@ export const WorkspaceView: React.FC = () => {
           </button>
         </div>
       )}
+
+      <hr style={{ borderTop: '1px solid #e2e8f0', margin: '2rem 0' }} />
+      <HealthProfileView />
 
       {/* Convert to Permanent Account Modal */}
       {showConvertModal && (
