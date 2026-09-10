@@ -62,6 +62,13 @@ describe('App Workspace & Progressive Identity Experience', () => {
       expect(screen.getByTestId('identity-badge')).toHaveTextContent('Anonymous Workspace')
       expect(screen.getByTestId('user-id')).toHaveTextContent('anon-user-test-uuid')
       expect(screen.getByTestId('anonymous-banner')).toBeInTheDocument()
+
+      // Clinical lists are rendered
+      expect(screen.getByText('Conditions')).toBeInTheDocument()
+      expect(screen.getByText('Symptoms')).toBeInTheDocument()
+      expect(screen.getByText('Medications')).toBeInTheDocument()
+      expect(screen.getByText('Allergies')).toBeInTheDocument()
+      expect(screen.getByText('Goals')).toBeInTheDocument()
     })
   })
 

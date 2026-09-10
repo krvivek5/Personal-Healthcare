@@ -1,6 +1,11 @@
 import React, { useState } from 'react'
 import { useAuth } from '../context/AuthContext'
 import { HealthProfileView } from './HealthProfileView'
+import { ConditionsList } from './ConditionsList'
+import { SymptomsList } from './SymptomsList'
+import { MedicationsList } from './MedicationsList'
+import { AllergiesList } from './AllergiesList'
+import { GoalsList } from './GoalsList'
 
 export const WorkspaceView: React.FC = () => {
   const { user, isAnonymous, isLoading, convertToPermanent, signOut, clearAnonymousSession, error } = useAuth()
@@ -95,6 +100,15 @@ export const WorkspaceView: React.FC = () => {
 
       <hr style={{ borderTop: '1px solid #e2e8f0', margin: '2rem 0' }} />
       <HealthProfileView />
+
+      <hr style={{ borderTop: '1px solid #e2e8f0', margin: '2rem 0' }} />
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
+        <ConditionsList />
+        <SymptomsList />
+        <MedicationsList />
+        <AllergiesList />
+        <GoalsList />
+      </div>
 
       {/* Convert to Permanent Account Modal */}
       {showConvertModal && (
