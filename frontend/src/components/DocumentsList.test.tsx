@@ -47,61 +47,30 @@ describe('DocumentsList', () => {
     } as unknown as ReturnType<typeof useAuth>)
   })
 
-  // ── Load / List ───────────────────────────────────────────────────────────
+  // --- Render ---
 
-  it('shows loading state initially', () => {
-    vi.mocked(documentsApi.list).mockReturnValue(new Promise(() => {}))
-    render(<DocumentsList />)
-    expect(screen.getByTestId('documents-loading')).toBeInTheDocument()
-    expect(documentsApi.list).toHaveBeenCalledWith(mockToken)
-  })
-
-  it('renders document list after loading', async () => {
-    vi.mocked(documentsApi.list).mockResolvedValueOnce([mockDoc])
-    render(<DocumentsList />)
-
-    await waitFor(() =>
-      expect(screen.queryByTestId('documents-loading')).not.toBeInTheDocument(),
-    )
+  it('renders document list', async () => {
+    render(<DocumentsList documents={[mockDoc]} onDocumentsChange={vi.fn()} />)
 
     expect(screen.getByTestId('documents-list')).toBeInTheDocument()
     expect(screen.getByTestId(`document-item-${mockDoc.id}`)).toBeInTheDocument()
     expect(screen.getByText('Blood Test Report')).toBeInTheDocument()
-    expect(documentsApi.list).toHaveBeenCalledWith(mockToken)
   })
 
   it('shows empty state when no documents', async () => {
-    vi.mocked(documentsApi.list).mockResolvedValueOnce([])
-    render(<DocumentsList />)
+    render(<DocumentsList documents={[]} onDocumentsChange={vi.fn()} />)
 
-    await waitFor(() =>
-      expect(screen.queryByTestId('documents-loading')).not.toBeInTheDocument(),
-    )
     expect(screen.getByTestId('documents-empty')).toBeInTheDocument()
   })
 
-  it('shows error state when list fails', async () => {
-    vi.mocked(documentsApi.list).mockRejectedValueOnce(new Error('Server error'))
-    render(<DocumentsList />)
-
-    await waitFor(() =>
-      expect(screen.queryByTestId('documents-loading')).not.toBeInTheDocument(),
-    )
-    expect(screen.getByTestId('documents-error')).toBeInTheDocument()
-    expect(screen.getByTestId('documents-error')).toHaveTextContent('Server error')
-  })
-
-  // ── Upload ────────────────────────────────────────────────────────────────
+  // --- Upload ---
 
   it('calls documentsApi.upload with correct arguments on submit', async () => {
-    vi.mocked(documentsApi.list).mockResolvedValueOnce([])
     const newDoc = { ...mockDoc, id: 'doc-2', display_name: 'My Upload' }
     vi.mocked(documentsApi.upload).mockResolvedValueOnce(newDoc)
 
-    render(<DocumentsList />)
-    await waitFor(() =>
-      expect(screen.queryByTestId('documents-loading')).not.toBeInTheDocument(),
-    )
+    const mockOnChange = vi.fn()
+    render(<DocumentsList documents={[]} onDocumentsChange={mockOnChange} />)
 
     const file = new File([new Uint8Array([0x25, 0x50, 0x44, 0x46])], 'test.pdf', {
       type: 'application/pdf',
@@ -130,16 +99,14 @@ describe('DocumentsList', () => {
         display_name: 'My Upload',
       }),
     )
+
+    expect(mockOnChange).toHaveBeenCalledOnce()
   })
 
   it('shows upload error when upload fails', async () => {
-    vi.mocked(documentsApi.list).mockResolvedValueOnce([])
     vi.mocked(documentsApi.upload).mockRejectedValueOnce(new Error('Upload failed'))
 
-    render(<DocumentsList />)
-    await waitFor(() =>
-      expect(screen.queryByTestId('documents-loading')).not.toBeInTheDocument(),
-    )
+    render(<DocumentsList documents={[]} onDocumentsChange={vi.fn()} />)
 
     const file = new File([new Uint8Array([0x25, 0x50, 0x44, 0x46])], 'test.pdf', {
       type: 'application/pdf',
@@ -155,10 +122,9 @@ describe('DocumentsList', () => {
     )
   })
 
-  // ── Download ──────────────────────────────────────────────────────────────
+  // --- Download ---
 
   it('calls documentsApi.download with correct id when download button clicked', async () => {
-    vi.mocked(documentsApi.list).mockResolvedValueOnce([mockDoc])
     vi.mocked(documentsApi.download).mockResolvedValueOnce(new Blob(['PDF content']))
 
     // Mock URL.createObjectURL
@@ -166,10 +132,12 @@ describe('DocumentsList', () => {
     const revokeObjectURL = vi.fn()
     vi.stubGlobal('URL', { createObjectURL, revokeObjectURL })
 
-    render(<DocumentsList />)
-    await waitFor(() =>
-      expect(screen.queryByTestId('documents-loading')).not.toBeInTheDocument(),
-    )
+    // Prevent JSDOM navigation error by mocking anchor click
+    const originalClick = HTMLAnchorElement.prototype.click
+    const mockAnchorClick = vi.fn()
+    HTMLAnchorElement.prototype.click = mockAnchorClick
+
+    render(<DocumentsList documents={[mockDoc]} onDocumentsChange={vi.fn()} />)
 
     const downloadBtn = screen.getByTestId(`btn-download-document-${mockDoc.id}`)
     fireEvent.click(downloadBtn)
@@ -177,16 +145,18 @@ describe('DocumentsList', () => {
     await waitFor(() =>
       expect(documentsApi.download).toHaveBeenCalledWith(mockToken, mockDoc.id),
     )
+
+    // Verify browser download behavior was triggered
+    expect(mockAnchorClick).toHaveBeenCalled()
+
+    // Restore original click
+    HTMLAnchorElement.prototype.click = originalClick
   })
 
   it('shows error when download fails', async () => {
-    vi.mocked(documentsApi.list).mockResolvedValueOnce([mockDoc])
     vi.mocked(documentsApi.download).mockRejectedValueOnce(new Error('Download failed'))
 
-    render(<DocumentsList />)
-    await waitFor(() =>
-      expect(screen.queryByTestId('documents-loading')).not.toBeInTheDocument(),
-    )
+    render(<DocumentsList documents={[mockDoc]} onDocumentsChange={vi.fn()} />)
 
     fireEvent.click(screen.getByTestId(`btn-download-document-${mockDoc.id}`))
 
@@ -195,29 +165,21 @@ describe('DocumentsList', () => {
     )
   })
 
-  // ── Edit metadata ─────────────────────────────────────────────────────────
+  // --- Edit metadata ---
 
   it('shows edit form when edit button clicked', async () => {
-    vi.mocked(documentsApi.list).mockResolvedValueOnce([mockDoc])
-    render(<DocumentsList />)
-
-    await waitFor(() =>
-      expect(screen.queryByTestId('documents-loading')).not.toBeInTheDocument(),
-    )
+    render(<DocumentsList documents={[mockDoc]} onDocumentsChange={vi.fn()} />)
 
     fireEvent.click(screen.getByTestId(`btn-edit-document-${mockDoc.id}`))
     expect(screen.getByTestId(`edit-display-name-${mockDoc.id}`)).toBeInTheDocument()
   })
 
   it('calls documentsApi.update with correct arguments on save', async () => {
-    vi.mocked(documentsApi.list).mockResolvedValueOnce([mockDoc])
     const updatedDoc = { ...mockDoc, display_name: 'Updated Name' }
     vi.mocked(documentsApi.update).mockResolvedValueOnce(updatedDoc)
 
-    render(<DocumentsList />)
-    await waitFor(() =>
-      expect(screen.queryByTestId('documents-loading')).not.toBeInTheDocument(),
-    )
+    const mockOnChange = vi.fn()
+    const { rerender } = render(<DocumentsList documents={[mockDoc]} onDocumentsChange={mockOnChange} />)
 
     fireEvent.click(screen.getByTestId(`btn-edit-document-${mockDoc.id}`))
 
@@ -233,17 +195,18 @@ describe('DocumentsList', () => {
         expect.objectContaining({ display_name: 'Updated Name' }),
       ),
     )
+
+    expect(mockOnChange).toHaveBeenCalledOnce()
+
+    // Simulate parent re-rendering with updated documents
+    rerender(<DocumentsList documents={[updatedDoc]} onDocumentsChange={mockOnChange} />)
+
     // Updated name should appear
     await waitFor(() => expect(screen.getByText('Updated Name')).toBeInTheDocument())
   })
 
   it('cancels edit without saving when cancel clicked', async () => {
-    vi.mocked(documentsApi.list).mockResolvedValueOnce([mockDoc])
-    render(<DocumentsList />)
-
-    await waitFor(() =>
-      expect(screen.queryByTestId('documents-loading')).not.toBeInTheDocument(),
-    )
+    render(<DocumentsList documents={[mockDoc]} onDocumentsChange={vi.fn()} />)
 
     fireEvent.click(screen.getByTestId(`btn-edit-document-${mockDoc.id}`))
     expect(screen.getByTestId(`edit-display-name-${mockDoc.id}`)).toBeInTheDocument()
@@ -253,28 +216,20 @@ describe('DocumentsList', () => {
     expect(documentsApi.update).not.toHaveBeenCalled()
   })
 
-  // ── Delete ────────────────────────────────────────────────────────────────
+  // --- Delete ---
 
   it('shows confirmation modal when delete button clicked', async () => {
-    vi.mocked(documentsApi.list).mockResolvedValueOnce([mockDoc])
-    render(<DocumentsList />)
-
-    await waitFor(() =>
-      expect(screen.queryByTestId('documents-loading')).not.toBeInTheDocument(),
-    )
+    render(<DocumentsList documents={[mockDoc]} onDocumentsChange={vi.fn()} />)
 
     fireEvent.click(screen.getByTestId(`btn-delete-document-${mockDoc.id}`))
     expect(screen.getByTestId('delete-confirm-modal')).toBeInTheDocument()
   })
 
   it('calls documentsApi.delete with correct id on confirm', async () => {
-    vi.mocked(documentsApi.list).mockResolvedValueOnce([mockDoc])
     vi.mocked(documentsApi.delete).mockResolvedValueOnce(undefined)
 
-    render(<DocumentsList />)
-    await waitFor(() =>
-      expect(screen.queryByTestId('documents-loading')).not.toBeInTheDocument(),
-    )
+    const mockOnChange = vi.fn()
+    const { rerender } = render(<DocumentsList documents={[mockDoc]} onDocumentsChange={mockOnChange} />)
 
     fireEvent.click(screen.getByTestId(`btn-delete-document-${mockDoc.id}`))
     fireEvent.click(screen.getByTestId('btn-confirm-delete'))
@@ -282,6 +237,12 @@ describe('DocumentsList', () => {
     await waitFor(() =>
       expect(documentsApi.delete).toHaveBeenCalledWith(mockToken, mockDoc.id),
     )
+
+    expect(mockOnChange).toHaveBeenCalledOnce()
+
+    // Simulate parent updating state
+    rerender(<DocumentsList documents={[]} onDocumentsChange={mockOnChange} />)
+
     // Document removed from list
     await waitFor(() =>
       expect(screen.queryByTestId(`document-item-${mockDoc.id}`)).not.toBeInTheDocument(),
@@ -289,12 +250,7 @@ describe('DocumentsList', () => {
   })
 
   it('cancels delete without calling api when cancel clicked', async () => {
-    vi.mocked(documentsApi.list).mockResolvedValueOnce([mockDoc])
-    render(<DocumentsList />)
-
-    await waitFor(() =>
-      expect(screen.queryByTestId('documents-loading')).not.toBeInTheDocument(),
-    )
+    render(<DocumentsList documents={[mockDoc]} onDocumentsChange={vi.fn()} />)
 
     fireEvent.click(screen.getByTestId(`btn-delete-document-${mockDoc.id}`))
     fireEvent.click(screen.getByTestId('btn-cancel-delete'))
@@ -306,13 +262,9 @@ describe('DocumentsList', () => {
   })
 
   it('shows error when delete fails', async () => {
-    vi.mocked(documentsApi.list).mockResolvedValueOnce([mockDoc])
     vi.mocked(documentsApi.delete).mockRejectedValueOnce(new Error('Delete failed'))
 
-    render(<DocumentsList />)
-    await waitFor(() =>
-      expect(screen.queryByTestId('documents-loading')).not.toBeInTheDocument(),
-    )
+    render(<DocumentsList documents={[mockDoc]} onDocumentsChange={vi.fn()} />)
 
     fireEvent.click(screen.getByTestId(`btn-delete-document-${mockDoc.id}`))
     fireEvent.click(screen.getByTestId('btn-confirm-delete'))

@@ -1,12 +1,11 @@
 import React, { useEffect, useState } from 'react'
 import { useAuth } from '../context/AuthContext'
-import { conditionsApi, documentsApi, Condition, ConditionCreate, ConditionUpdate, MedicalDocument } from '../lib/api'
+import { conditionsApi, Condition, ConditionCreate, ConditionUpdate, MedicalDocument } from '../lib/api'
 import { ProvenanceBadge } from './ProvenanceBadge'
 
-export const ConditionsList: React.FC = () => {
+export const ConditionsList: React.FC<{ documents: MedicalDocument[], onViewDocument?: (id: string) => void }> = ({ documents, onViewDocument }) => {
   const { session } = useAuth()
   const [conditions, setConditions] = useState<Condition[]>([])
-  const [documents, setDocuments] = useState<MedicalDocument[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -31,13 +30,9 @@ export const ConditionsList: React.FC = () => {
 
     const fetchConditions = async () => {
       try {
-        const [condData, docData] = await Promise.all([
-          conditionsApi.list(session.access_token),
-          documentsApi.list(session.access_token)
-        ])
+        const condData = await conditionsApi.list(session.access_token)
         if (mounted) {
           setConditions(condData)
-          setDocuments(docData)
           setIsLoading(false)
         }
       } catch (err) {
@@ -281,11 +276,11 @@ export const ConditionsList: React.FC = () => {
                     sourceType={condition.source_type}
                     verificationState={condition.verification_state}
                   />
-                  {condition.source_id && (
+                  {condition.source_type === 'SOURCE_DOCUMENT' && condition.source_id && (
                     <button
                       data-testid={`link-document-${condition.source_id}`}
                       className="text-sm text-blue-600 underline"
-                      onClick={() => alert('View document ' + condition.source_id)}
+                      onClick={() => onViewDocument && onViewDocument(condition.source_id!)}
                     >
                       View Source
                     </button>

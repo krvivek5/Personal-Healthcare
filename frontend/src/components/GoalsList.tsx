@@ -1,12 +1,11 @@
 import React, { useEffect, useState } from 'react'
 import { useAuth } from '../context/AuthContext'
-import { goalsApi, documentsApi, Goal, GoalCreate, GoalUpdate, MedicalDocument } from '../lib/api'
+import { goalsApi, Goal, GoalCreate, GoalUpdate, MedicalDocument } from '../lib/api'
 import { ProvenanceBadge } from './ProvenanceBadge'
 
-export const GoalsList: React.FC = () => {
+export const GoalsList: React.FC<{ documents: MedicalDocument[], onViewDocument?: (id: string) => void }> = ({ documents, onViewDocument }) => {
   const { session } = useAuth()
   const [goals, setGoals] = useState<Goal[]>([])
-  const [documents, setDocuments] = useState<MedicalDocument[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -30,13 +29,9 @@ export const GoalsList: React.FC = () => {
 
     const fetchGoals = async () => {
       try {
-        const [goalData, docData] = await Promise.all([
-          goalsApi.list(session.access_token),
-          documentsApi.list(session.access_token)
-        ])
+        const goalData = await goalsApi.list(session.access_token)
         if (mounted) {
           setGoals(goalData)
-          setDocuments(docData)
           setIsLoading(false)
         }
       } catch (err) {
@@ -266,11 +261,11 @@ export const GoalsList: React.FC = () => {
                     sourceType={goal.source_type}
                     verificationState={goal.verification_state}
                   />
-                  {goal.source_id && (
+                  {goal.source_type === 'SOURCE_DOCUMENT' && goal.source_id && (
                     <button
                       data-testid={`link-document-${goal.source_id}`}
                       className="text-sm text-blue-600 underline"
-                      onClick={() => alert('View document ' + goal.source_id)}
+                      onClick={() => onViewDocument && onViewDocument(goal.source_id!)}
                     >
                       View Source
                     </button>

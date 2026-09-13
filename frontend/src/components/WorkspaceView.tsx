@@ -1,5 +1,6 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import { useAuth } from '../context/AuthContext'
+import { documentsApi, MedicalDocument } from '../lib/api'
 import { HealthProfileView } from './HealthProfileView'
 import { ConditionsList } from './ConditionsList'
 import { SymptomsList } from './SymptomsList'
@@ -10,7 +11,7 @@ import { DocumentsList } from './DocumentsList'
 import { TimelineView } from './TimelineView'
 
 export const WorkspaceView: React.FC = () => {
-  const { user, isAnonymous, isLoading, convertToPermanent, signOut, clearAnonymousSession, error } = useAuth()
+  const { user, session, isAnonymous, isLoading, convertToPermanent, signOut, clearAnonymousSession, error } = useAuth()
 
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -18,6 +19,21 @@ export const WorkspaceView: React.FC = () => {
   const [showClearConfirm, setShowClearConfirm] = useState(false)
   const [conversionSuccess, setConversionSuccess] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [documents, setDocuments] = useState<MedicalDocument[]>([])
+
+  const fetchDocuments = React.useCallback(async () => {
+    if (!session?.access_token) return
+    try {
+      const data = await documentsApi.list(session.access_token)
+      setDocuments(data)
+    } catch (err) {
+      console.error('Failed to load documents', err)
+    }
+  }, [session?.access_token])
+
+  useEffect(() => {
+    fetchDocuments()
+  }, [fetchDocuments])
 
   if (isLoading) {
     return <div data-testid="auth-loading">Initializing secure workspace...</div>
@@ -40,6 +56,29 @@ export const WorkspaceView: React.FC = () => {
   const handleClearSession = async () => {
     await clearAnonymousSession()
     setShowClearConfirm(false)
+  }
+
+  const handleViewDocument = async (id: string) => {
+    if (!session?.access_token) return
+    const doc = documents.find(d => d.id === id)
+    if (!doc) {
+      console.error('Document not found')
+      return
+    }
+    try {
+      const blob = await documentsApi.download(session.access_token, doc.id)
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.target = '_blank'
+      a.rel = 'noopener noreferrer'
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      setTimeout(() => URL.revokeObjectURL(url), 100)
+    } catch (err) {
+      console.error('Failed to view document', err)
+    }
   }
 
   return (
@@ -108,12 +147,12 @@ export const WorkspaceView: React.FC = () => {
 
       <hr style={{ borderTop: '1px solid #e2e8f0', margin: '2rem 0' }} />
       <div style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
-        <ConditionsList />
-        <SymptomsList />
-        <MedicationsList />
-        <AllergiesList />
-        <GoalsList />
-        <DocumentsList />
+        <ConditionsList documents={documents} onViewDocument={handleViewDocument} />
+        <SymptomsList documents={documents} onViewDocument={handleViewDocument} />
+        <MedicationsList documents={documents} onViewDocument={handleViewDocument} />
+        <AllergiesList documents={documents} onViewDocument={handleViewDocument} />
+        <GoalsList documents={documents} onViewDocument={handleViewDocument} />
+        <DocumentsList documents={documents} onDocumentsChange={fetchDocuments} />
       </div>
 
       {/* Convert to Permanent Account Modal */}

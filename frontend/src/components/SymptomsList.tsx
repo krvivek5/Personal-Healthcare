@@ -1,12 +1,11 @@
 import React, { useEffect, useState } from 'react'
 import { useAuth } from '../context/AuthContext'
-import { symptomsApi, documentsApi, Symptom, SymptomCreate, SymptomUpdate, MedicalDocument } from '../lib/api'
+import { symptomsApi, Symptom, SymptomCreate, SymptomUpdate, MedicalDocument } from '../lib/api'
 import { ProvenanceBadge } from './ProvenanceBadge'
 
-export const SymptomsList: React.FC = () => {
+export const SymptomsList: React.FC<{ documents: MedicalDocument[], onViewDocument?: (id: string) => void }> = ({ documents, onViewDocument }) => {
   const { session } = useAuth()
   const [symptoms, setSymptoms] = useState<Symptom[]>([])
-  const [documents, setDocuments] = useState<MedicalDocument[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -28,13 +27,9 @@ export const SymptomsList: React.FC = () => {
 
     const fetchSymptoms = async () => {
       try {
-        const [symData, docData] = await Promise.all([
-          symptomsApi.list(session.access_token),
-          documentsApi.list(session.access_token)
-        ])
+        const symData = await symptomsApi.list(session.access_token)
         if (mounted) {
           setSymptoms(symData)
-          setDocuments(docData)
           setIsLoading(false)
         }
       } catch (err) {
@@ -243,11 +238,11 @@ export const SymptomsList: React.FC = () => {
                     sourceType={symptom.source_type}
                     verificationState={symptom.verification_state}
                   />
-                  {symptom.source_id && (
+                  {symptom.source_type === 'SOURCE_DOCUMENT' && symptom.source_id && (
                     <button
                       data-testid={`link-document-${symptom.source_id}`}
                       className="text-sm text-blue-600 underline"
-                      onClick={() => alert('View document ' + symptom.source_id)}
+                      onClick={() => onViewDocument && onViewDocument(symptom.source_id!)}
                     >
                       View Source
                     </button>

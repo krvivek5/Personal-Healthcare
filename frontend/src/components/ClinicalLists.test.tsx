@@ -61,6 +61,22 @@ vi.mock('../lib/api', () => ({
   },
 }))
 
+const mockDoc = {
+  id: 'doc-1',
+  patient_id: 'p-1',
+  file_name: 'blood_test.pdf',
+  display_name: 'Blood Test Report',
+  document_type: 'lab_report',
+  content_type: 'application/pdf',
+  file_size_bytes: 102400,
+  document_date: '2026-01-15',
+  notes: 'Fasting required',
+  source_type: 'PATIENT_REPORTED',
+  uploaded_at: '2026-01-15T10:00:00Z',
+  created_at: '2026-01-15T10:00:00Z',
+  updated_at: '2026-01-15T10:00:00Z',
+}
+
 describe('Clinical Entity Lists', () => {
   const mockToken = 'mock-token'
 
@@ -92,11 +108,11 @@ describe('Clinical Entity Lists', () => {
 
     it('loads and views conditions', async () => {
       vi.mocked(conditionsApi.list).mockResolvedValueOnce([mockCondition])
-      render(<ConditionsList />)
-      
+      render(<ConditionsList documents={[mockDoc]} />)
+
       expect(screen.getByTestId('conditions-loading')).toBeInTheDocument()
       await waitFor(() => expect(screen.queryByTestId('conditions-loading')).not.toBeInTheDocument())
-      
+
       expect(screen.getByText('Hypertension')).toBeInTheDocument()
       expect(screen.getByText('Active')).toBeInTheDocument() // The text might be lowercase or capitalized depending on how it's rendered, wait, we rendered `{condition.status}` so it will be `active`. Wait, the render says `{condition.status}`.
       expect(conditionsApi.list).toHaveBeenCalledWith(mockToken)
@@ -106,13 +122,13 @@ describe('Clinical Entity Lists', () => {
       vi.mocked(conditionsApi.list).mockResolvedValueOnce([])
       const newCond = { ...mockCondition, id: 'cond-2', name: 'Asthma' }
       vi.mocked(conditionsApi.create).mockResolvedValueOnce(newCond)
-      
-      render(<ConditionsList />)
+
+      render(<ConditionsList documents={[mockDoc]} />)
       await waitFor(() => expect(screen.queryByTestId('conditions-loading')).not.toBeInTheDocument())
-      
+
       fireEvent.change(screen.getByTestId('input-condition-name'), { target: { value: 'Asthma' } })
       fireEvent.click(screen.getByTestId('btn-add-condition'))
-      
+
       await waitFor(() => {
         expect(conditionsApi.create).toHaveBeenCalledWith(mockToken, {
           name: 'Asthma',
@@ -125,26 +141,50 @@ describe('Clinical Entity Lists', () => {
       expect(screen.getByText('Asthma')).toBeInTheDocument()
     })
 
+    it('creates a new condition with Source Document', async () => {
+      vi.mocked(conditionsApi.list).mockResolvedValueOnce([])
+      const newCond = { ...mockCondition, id: 'cond-2', name: 'Asthma', source_type: 'SOURCE_DOCUMENT' as const, source_id: mockDoc.id }
+      vi.mocked(conditionsApi.create).mockResolvedValueOnce(newCond)
+
+      render(<ConditionsList documents={[mockDoc]} />)
+      await waitFor(() => expect(screen.queryByTestId('conditions-loading')).not.toBeInTheDocument())
+
+      fireEvent.change(screen.getByTestId('input-condition-name'), { target: { value: 'Asthma' } })
+      fireEvent.change(screen.getByTestId('input-condition-source-type'), { target: { value: 'SOURCE_DOCUMENT' } })
+      fireEvent.change(screen.getByTestId('input-condition-source-id'), { target: { value: mockDoc.id } })
+      fireEvent.click(screen.getByTestId('btn-add-condition'))
+
+      await waitFor(() => {
+        expect(conditionsApi.create).toHaveBeenCalledWith(mockToken, {
+          name: 'Asthma',
+          status: 'active',
+          is_chronic: false,
+          source_type: 'SOURCE_DOCUMENT',
+          source_id: mockDoc.id
+        })
+      })
+    })
+
     it('edits a condition', async () => {
       vi.mocked(conditionsApi.list).mockResolvedValueOnce([mockCondition])
       const updatedCond = { ...mockCondition, status: 'resolved' as const }
       vi.mocked(conditionsApi.update).mockResolvedValueOnce(updatedCond)
-      
-      render(<ConditionsList />)
+
+      render(<ConditionsList documents={[mockDoc]} />)
       await waitFor(() => expect(screen.queryByTestId('conditions-loading')).not.toBeInTheDocument())
-      
+
       fireEvent.click(screen.getByTestId(`btn-edit-condition-${mockCondition.id}`))
-      
+
       fireEvent.change(screen.getByTestId(`edit-condition-status-${mockCondition.id}`), { target: { value: 'resolved' } })
       fireEvent.click(screen.getByTestId(`btn-save-condition-${mockCondition.id}`))
-      
+
       await waitFor(() => {
         expect(conditionsApi.update).toHaveBeenCalledWith(mockToken, mockCondition.id, {
           status: 'resolved',
           is_chronic: true
         })
       })
-      
+
       const updateCallArg = vi.mocked(conditionsApi.update).mock.calls[0][2]
       expect(updateCallArg).not.toHaveProperty('source_type')
     })
@@ -152,16 +192,28 @@ describe('Clinical Entity Lists', () => {
     it('deletes a condition', async () => {
       vi.mocked(conditionsApi.list).mockResolvedValueOnce([mockCondition])
       vi.mocked(conditionsApi.delete).mockResolvedValueOnce(undefined)
-      
-      render(<ConditionsList />)
+
+      render(<ConditionsList documents={[mockDoc]} />)
       await waitFor(() => expect(screen.queryByTestId('conditions-loading')).not.toBeInTheDocument())
-      
+
       fireEvent.click(screen.getByTestId(`btn-delete-condition-${mockCondition.id}`))
-      
+
       await waitFor(() => {
         expect(conditionsApi.delete).toHaveBeenCalledWith(mockToken, mockCondition.id)
       })
       expect(screen.queryByText('Hypertension')).not.toBeInTheDocument()
+    })
+
+    it('calls onViewDocument when View Source is clicked', async () => {
+      const conditionWithSource = { ...mockCondition, source_type: 'SOURCE_DOCUMENT' as const, source_id: mockDoc.id }
+      vi.mocked(conditionsApi.list).mockResolvedValueOnce([conditionWithSource])
+      const mockOnView = vi.fn()
+
+      render(<ConditionsList documents={[mockDoc]} onViewDocument={mockOnView} />)
+      await waitFor(() => expect(screen.queryByTestId('conditions-loading')).not.toBeInTheDocument())
+
+      fireEvent.click(screen.getByTestId(`link-document-${mockDoc.id}`))
+      expect(mockOnView).toHaveBeenCalledWith(mockDoc.id)
     })
   })
 
@@ -185,8 +237,8 @@ describe('Clinical Entity Lists', () => {
 
     it('loads and views symptoms', async () => {
       vi.mocked(symptomsApi.list).mockResolvedValueOnce([mockSymptom])
-      render(<SymptomsList />)
-      
+      render(<SymptomsList documents={[mockDoc]} />)
+
       await waitFor(() => expect(screen.queryByTestId('symptoms-loading')).not.toBeInTheDocument())
       expect(screen.getByText('Headache')).toBeInTheDocument()
     })
@@ -195,14 +247,14 @@ describe('Clinical Entity Lists', () => {
       vi.mocked(symptomsApi.list).mockResolvedValueOnce([])
       const newSym = { ...mockSymptom, id: 'sym-2', name: 'Fever', severity: 'severe' as const }
       vi.mocked(symptomsApi.create).mockResolvedValueOnce(newSym)
-      
-      render(<SymptomsList />)
+
+      render(<SymptomsList documents={[mockDoc]} />)
       await waitFor(() => expect(screen.queryByTestId('symptoms-loading')).not.toBeInTheDocument())
-      
+
       fireEvent.change(screen.getByTestId('input-symptom-name'), { target: { value: 'Fever' } })
       fireEvent.change(screen.getByTestId('input-symptom-severity'), { target: { value: 'severe' } })
       fireEvent.click(screen.getByTestId('btn-add-symptom'))
-      
+
       await waitFor(() => {
         expect(symptomsApi.create).toHaveBeenCalledWith(mockToken, {
           name: 'Fever',
@@ -213,26 +265,50 @@ describe('Clinical Entity Lists', () => {
       })
     })
 
+    it('creates a new symptom with Source Document', async () => {
+      vi.mocked(symptomsApi.list).mockResolvedValueOnce([])
+      const newSym = { ...mockSymptom, id: 'sym-2', name: 'Fever', severity: 'severe' as const, source_type: 'SOURCE_DOCUMENT' as const, source_id: mockDoc.id }
+      vi.mocked(symptomsApi.create).mockResolvedValueOnce(newSym)
+
+      render(<SymptomsList documents={[mockDoc]} />)
+      await waitFor(() => expect(screen.queryByTestId('symptoms-loading')).not.toBeInTheDocument())
+
+      fireEvent.change(screen.getByTestId('input-symptom-name'), { target: { value: 'Fever' } })
+      fireEvent.change(screen.getByTestId('input-symptom-severity'), { target: { value: 'severe' } })
+      fireEvent.change(screen.getByTestId('input-symptom-source-type'), { target: { value: 'SOURCE_DOCUMENT' } })
+      fireEvent.change(screen.getByTestId('input-symptom-source-id'), { target: { value: mockDoc.id } })
+      fireEvent.click(screen.getByTestId('btn-add-symptom'))
+
+      await waitFor(() => {
+        expect(symptomsApi.create).toHaveBeenCalledWith(mockToken, {
+          name: 'Fever',
+          severity: 'severe',
+          source_type: 'SOURCE_DOCUMENT',
+          source_id: mockDoc.id
+        })
+      })
+    })
+
     it('edits a symptom', async () => {
       vi.mocked(symptomsApi.list).mockResolvedValueOnce([mockSymptom])
       const updatedSym = { ...mockSymptom, severity: 'moderate' as const }
       vi.mocked(symptomsApi.update).mockResolvedValueOnce(updatedSym)
-      
-      render(<SymptomsList />)
+
+      render(<SymptomsList documents={[mockDoc]} />)
       await waitFor(() => expect(screen.queryByTestId('symptoms-loading')).not.toBeInTheDocument())
-      
+
       fireEvent.click(screen.getByTestId(`btn-edit-symptom-${mockSymptom.id}`))
-      
+
       fireEvent.change(screen.getByTestId(`edit-symptom-severity-${mockSymptom.id}`), { target: { value: 'moderate' } })
       fireEvent.click(screen.getByTestId(`btn-save-symptom-${mockSymptom.id}`))
-      
+
       await waitFor(() => {
         expect(symptomsApi.update).toHaveBeenCalledWith(mockToken, mockSymptom.id, {
           name: 'Headache',
           severity: 'moderate'
         })
       })
-      
+
       const updateCallArg = vi.mocked(symptomsApi.update).mock.calls[0][2]
       expect(updateCallArg).not.toHaveProperty('source_type')
     })
@@ -240,12 +316,12 @@ describe('Clinical Entity Lists', () => {
     it('deletes a symptom', async () => {
       vi.mocked(symptomsApi.list).mockResolvedValueOnce([mockSymptom])
       vi.mocked(symptomsApi.delete).mockResolvedValueOnce(undefined)
-      
-      render(<SymptomsList />)
+
+      render(<SymptomsList documents={[mockDoc]} />)
       await waitFor(() => expect(screen.queryByTestId('symptoms-loading')).not.toBeInTheDocument())
-      
+
       fireEvent.click(screen.getByTestId(`btn-delete-symptom-${mockSymptom.id}`))
-      
+
       await waitFor(() => {
         expect(symptomsApi.delete).toHaveBeenCalledWith(mockToken, mockSymptom.id)
       })
@@ -275,7 +351,7 @@ describe('Clinical Entity Lists', () => {
 
     it('loads and views medications', async () => {
       vi.mocked(medicationsApi.list).mockResolvedValueOnce([mockMed])
-      render(<MedicationsList />)
+      render(<MedicationsList documents={[mockDoc]} />)
       await waitFor(() => expect(screen.queryByTestId('medications-loading')).not.toBeInTheDocument())
       expect(screen.getByText('Ibuprofen')).toBeInTheDocument()
     })
@@ -284,14 +360,14 @@ describe('Clinical Entity Lists', () => {
       vi.mocked(medicationsApi.list).mockResolvedValueOnce([])
       const newMed = { ...mockMed, id: 'med-2', name: 'Aspirin' }
       vi.mocked(medicationsApi.create).mockResolvedValueOnce(newMed)
-      
-      render(<MedicationsList />)
+
+      render(<MedicationsList documents={[mockDoc]} />)
       await waitFor(() => expect(screen.queryByTestId('medications-loading')).not.toBeInTheDocument())
-      
+
       fireEvent.change(screen.getByTestId('input-med-name'), { target: { value: 'Aspirin' } })
       fireEvent.change(screen.getByTestId('input-med-dosage'), { target: { value: '81mg' } })
       fireEvent.click(screen.getByTestId('btn-add-med'))
-      
+
       await waitFor(() => {
         expect(medicationsApi.create).toHaveBeenCalledWith(mockToken, {
           name: 'Aspirin',
@@ -305,19 +381,46 @@ describe('Clinical Entity Lists', () => {
       })
     })
 
+    it('creates a new medication with Source Document', async () => {
+      vi.mocked(medicationsApi.list).mockResolvedValueOnce([])
+      const newMed = { ...mockMed, id: 'med-2', name: 'Aspirin', source_type: 'SOURCE_DOCUMENT' as const, source_id: mockDoc.id }
+      vi.mocked(medicationsApi.create).mockResolvedValueOnce(newMed)
+
+      render(<MedicationsList documents={[mockDoc]} />)
+      await waitFor(() => expect(screen.queryByTestId('medications-loading')).not.toBeInTheDocument())
+
+      fireEvent.change(screen.getByTestId('input-med-name'), { target: { value: 'Aspirin' } })
+      fireEvent.change(screen.getByTestId('input-med-dosage'), { target: { value: '81mg' } })
+      fireEvent.change(screen.getByTestId('input-med-source-type'), { target: { value: 'SOURCE_DOCUMENT' } })
+      fireEvent.change(screen.getByTestId('input-med-source-id'), { target: { value: mockDoc.id } })
+      fireEvent.click(screen.getByTestId('btn-add-med'))
+
+      await waitFor(() => {
+        expect(medicationsApi.create).toHaveBeenCalledWith(mockToken, {
+          name: 'Aspirin',
+          dosage: '81mg',
+          frequency: null,
+          status: 'active',
+          as_needed: false,
+          source_type: 'SOURCE_DOCUMENT',
+          source_id: mockDoc.id
+        })
+      })
+    })
+
     it('edits a medication', async () => {
       vi.mocked(medicationsApi.list).mockResolvedValueOnce([mockMed])
       const updatedMed = { ...mockMed, status: 'stopped' as const }
       vi.mocked(medicationsApi.update).mockResolvedValueOnce(updatedMed)
-      
-      render(<MedicationsList />)
+
+      render(<MedicationsList documents={[mockDoc]} />)
       await waitFor(() => expect(screen.queryByTestId('medications-loading')).not.toBeInTheDocument())
-      
+
       fireEvent.click(screen.getByTestId(`btn-edit-med-${mockMed.id}`))
-      
+
       fireEvent.change(screen.getByTestId(`edit-med-status-${mockMed.id}`), { target: { value: 'stopped' } })
       fireEvent.click(screen.getByTestId(`btn-save-med-${mockMed.id}`))
-      
+
       await waitFor(() => {
         expect(medicationsApi.update).toHaveBeenCalledWith(mockToken, mockMed.id, {
           name: 'Ibuprofen',
@@ -327,7 +430,7 @@ describe('Clinical Entity Lists', () => {
           as_needed: true
         })
       })
-      
+
       const updateCallArg = vi.mocked(medicationsApi.update).mock.calls[0][2]
       expect(updateCallArg).not.toHaveProperty('source_type')
     })
@@ -335,12 +438,12 @@ describe('Clinical Entity Lists', () => {
     it('deletes a medication', async () => {
       vi.mocked(medicationsApi.list).mockResolvedValueOnce([mockMed])
       vi.mocked(medicationsApi.delete).mockResolvedValueOnce(undefined)
-      
-      render(<MedicationsList />)
+
+      render(<MedicationsList documents={[mockDoc]} />)
       await waitFor(() => expect(screen.queryByTestId('medications-loading')).not.toBeInTheDocument())
-      
+
       fireEvent.click(screen.getByTestId(`btn-delete-med-${mockMed.id}`))
-      
+
       await waitFor(() => {
         expect(medicationsApi.delete).toHaveBeenCalledWith(mockToken, mockMed.id)
       })
@@ -366,7 +469,7 @@ describe('Clinical Entity Lists', () => {
 
     it('loads and views allergies', async () => {
       vi.mocked(allergiesApi.list).mockResolvedValueOnce([mockAllergy])
-      render(<AllergiesList />)
+      render(<AllergiesList documents={[mockDoc]} />)
       await waitFor(() => expect(screen.queryByTestId('allergies-loading')).not.toBeInTheDocument())
       expect(screen.getByText('Peanuts')).toBeInTheDocument()
     })
@@ -375,13 +478,13 @@ describe('Clinical Entity Lists', () => {
       vi.mocked(allergiesApi.list).mockResolvedValueOnce([])
       const newAlg = { ...mockAllergy, id: 'alg-2', allergen: 'Dust' }
       vi.mocked(allergiesApi.create).mockResolvedValueOnce(newAlg)
-      
-      render(<AllergiesList />)
+
+      render(<AllergiesList documents={[mockDoc]} />)
       await waitFor(() => expect(screen.queryByTestId('allergies-loading')).not.toBeInTheDocument())
-      
+
       fireEvent.change(screen.getByTestId('input-allergy-allergen'), { target: { value: 'Dust' } })
       fireEvent.click(screen.getByTestId('btn-add-allergy'))
-      
+
       await waitFor(() => {
         expect(allergiesApi.create).toHaveBeenCalledWith(mockToken, {
           allergen: 'Dust',
@@ -393,19 +496,43 @@ describe('Clinical Entity Lists', () => {
       })
     })
 
+    it('creates a new allergy with Source Document', async () => {
+      vi.mocked(allergiesApi.list).mockResolvedValueOnce([])
+      const newAlg = { ...mockAllergy, id: 'alg-2', allergen: 'Dust', source_type: 'SOURCE_DOCUMENT' as const, source_id: mockDoc.id }
+      vi.mocked(allergiesApi.create).mockResolvedValueOnce(newAlg)
+
+      render(<AllergiesList documents={[mockDoc]} />)
+      await waitFor(() => expect(screen.queryByTestId('allergies-loading')).not.toBeInTheDocument())
+
+      fireEvent.change(screen.getByTestId('input-allergy-allergen'), { target: { value: 'Dust' } })
+      fireEvent.change(screen.getByTestId('input-allergy-source-type'), { target: { value: 'SOURCE_DOCUMENT' } })
+      fireEvent.change(screen.getByTestId('input-allergy-source-id'), { target: { value: mockDoc.id } })
+      fireEvent.click(screen.getByTestId('btn-add-allergy'))
+
+      await waitFor(() => {
+        expect(allergiesApi.create).toHaveBeenCalledWith(mockToken, {
+          allergen: 'Dust',
+          reaction: null,
+          severity: null,
+          source_type: 'SOURCE_DOCUMENT',
+          source_id: mockDoc.id
+        })
+      })
+    })
+
     it('edits an allergy', async () => {
       vi.mocked(allergiesApi.list).mockResolvedValueOnce([mockAllergy])
       const updatedAlg = { ...mockAllergy, severity: 'life_threatening' as const }
       vi.mocked(allergiesApi.update).mockResolvedValueOnce(updatedAlg)
-      
-      render(<AllergiesList />)
+
+      render(<AllergiesList documents={[mockDoc]} />)
       await waitFor(() => expect(screen.queryByTestId('allergies-loading')).not.toBeInTheDocument())
-      
+
       fireEvent.click(screen.getByTestId(`btn-edit-allergy-${mockAllergy.id}`))
-      
+
       fireEvent.change(screen.getByTestId(`edit-allergy-severity-${mockAllergy.id}`), { target: { value: 'life_threatening' } })
       fireEvent.click(screen.getByTestId(`btn-save-allergy-${mockAllergy.id}`))
-      
+
       await waitFor(() => {
         expect(allergiesApi.update).toHaveBeenCalledWith(mockToken, mockAllergy.id, {
           allergen: 'Peanuts',
@@ -413,7 +540,7 @@ describe('Clinical Entity Lists', () => {
           severity: 'life_threatening'
         })
       })
-      
+
       const updateCallArg = vi.mocked(allergiesApi.update).mock.calls[0][2]
       expect(updateCallArg).not.toHaveProperty('source_type')
     })
@@ -421,12 +548,12 @@ describe('Clinical Entity Lists', () => {
     it('deletes an allergy', async () => {
       vi.mocked(allergiesApi.list).mockResolvedValueOnce([mockAllergy])
       vi.mocked(allergiesApi.delete).mockResolvedValueOnce(undefined)
-      
-      render(<AllergiesList />)
+
+      render(<AllergiesList documents={[mockDoc]} />)
       await waitFor(() => expect(screen.queryByTestId('allergies-loading')).not.toBeInTheDocument())
-      
+
       fireEvent.click(screen.getByTestId(`btn-delete-allergy-${mockAllergy.id}`))
-      
+
       await waitFor(() => {
         expect(allergiesApi.delete).toHaveBeenCalledWith(mockToken, mockAllergy.id)
       })
@@ -451,7 +578,7 @@ describe('Clinical Entity Lists', () => {
 
     it('loads and views goals', async () => {
       vi.mocked(goalsApi.list).mockResolvedValueOnce([mockGoal])
-      render(<GoalsList />)
+      render(<GoalsList documents={[mockDoc]} />)
       await waitFor(() => expect(screen.queryByTestId('goals-loading')).not.toBeInTheDocument())
       expect(screen.getByText('Exercise daily')).toBeInTheDocument()
     })
@@ -460,13 +587,13 @@ describe('Clinical Entity Lists', () => {
       vi.mocked(goalsApi.list).mockResolvedValueOnce([])
       const newGoal = { ...mockGoal, id: 'gol-2', description: 'Drink water' }
       vi.mocked(goalsApi.create).mockResolvedValueOnce(newGoal)
-      
-      render(<GoalsList />)
+
+      render(<GoalsList documents={[mockDoc]} />)
       await waitFor(() => expect(screen.queryByTestId('goals-loading')).not.toBeInTheDocument())
-      
+
       fireEvent.change(screen.getByTestId('input-goal-description'), { target: { value: 'Drink water' } })
       fireEvent.click(screen.getByTestId('btn-add-goal'))
-      
+
       await waitFor(() => {
         expect(goalsApi.create).toHaveBeenCalledWith(mockToken, {
           description: 'Drink water',
@@ -478,19 +605,43 @@ describe('Clinical Entity Lists', () => {
       })
     })
 
+    it('creates a new goal with Source Document', async () => {
+      vi.mocked(goalsApi.list).mockResolvedValueOnce([])
+      const newGoal = { ...mockGoal, id: 'gol-2', description: 'Drink water', source_type: 'SOURCE_DOCUMENT' as const, source_id: mockDoc.id }
+      vi.mocked(goalsApi.create).mockResolvedValueOnce(newGoal)
+
+      render(<GoalsList documents={[mockDoc]} />)
+      await waitFor(() => expect(screen.queryByTestId('goals-loading')).not.toBeInTheDocument())
+
+      fireEvent.change(screen.getByTestId('input-goal-description'), { target: { value: 'Drink water' } })
+      fireEvent.change(screen.getByTestId('input-goal-source-type'), { target: { value: 'SOURCE_DOCUMENT' } })
+      fireEvent.change(screen.getByTestId('input-goal-source-id'), { target: { value: mockDoc.id } })
+      fireEvent.click(screen.getByTestId('btn-add-goal'))
+
+      await waitFor(() => {
+        expect(goalsApi.create).toHaveBeenCalledWith(mockToken, {
+          description: 'Drink water',
+          status: 'active',
+          target_date: null,
+          source_type: 'SOURCE_DOCUMENT',
+          source_id: mockDoc.id
+        })
+      })
+    })
+
     it('edits a goal', async () => {
       vi.mocked(goalsApi.list).mockResolvedValueOnce([mockGoal])
       const updatedGoal = { ...mockGoal, status: 'achieved' as const }
       vi.mocked(goalsApi.update).mockResolvedValueOnce(updatedGoal)
-      
-      render(<GoalsList />)
+
+      render(<GoalsList documents={[mockDoc]} />)
       await waitFor(() => expect(screen.queryByTestId('goals-loading')).not.toBeInTheDocument())
-      
+
       fireEvent.click(screen.getByTestId(`btn-edit-goal-${mockGoal.id}`))
-      
+
       fireEvent.change(screen.getByTestId(`edit-goal-status-${mockGoal.id}`), { target: { value: 'achieved' } })
       fireEvent.click(screen.getByTestId(`btn-save-goal-${mockGoal.id}`))
-      
+
       await waitFor(() => {
         expect(goalsApi.update).toHaveBeenCalledWith(mockToken, mockGoal.id, {
           description: 'Exercise daily',
@@ -498,7 +649,7 @@ describe('Clinical Entity Lists', () => {
           target_date: '2026-12-31'
         })
       })
-      
+
       const updateCallArg = vi.mocked(goalsApi.update).mock.calls[0][2]
       expect(updateCallArg).not.toHaveProperty('source_type')
     })
@@ -506,12 +657,12 @@ describe('Clinical Entity Lists', () => {
     it('deletes a goal', async () => {
       vi.mocked(goalsApi.list).mockResolvedValueOnce([mockGoal])
       vi.mocked(goalsApi.delete).mockResolvedValueOnce(undefined)
-      
-      render(<GoalsList />)
+
+      render(<GoalsList documents={[mockDoc]} />)
       await waitFor(() => expect(screen.queryByTestId('goals-loading')).not.toBeInTheDocument())
-      
+
       fireEvent.click(screen.getByTestId(`btn-delete-goal-${mockGoal.id}`))
-      
+
       await waitFor(() => {
         expect(goalsApi.delete).toHaveBeenCalledWith(mockToken, mockGoal.id)
       })

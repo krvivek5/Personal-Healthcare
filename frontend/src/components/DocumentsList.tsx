@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useRef, useState } from 'react'
 import { useAuth } from '../context/AuthContext'
 import {
   documentsApi,
@@ -32,10 +32,13 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
-export const DocumentsList: React.FC = () => {
+interface DocumentsListProps {
+  documents: MedicalDocument[]
+  onDocumentsChange: () => void
+}
+
+export const DocumentsList: React.FC<DocumentsListProps> = ({ documents, onDocumentsChange }) => {
   const { session } = useAuth()
-  const [documents, setDocuments] = useState<MedicalDocument[]>([])
-  const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
   // Upload form state
@@ -60,29 +63,6 @@ export const DocumentsList: React.FC = () => {
   // Download loading state
   const [downloadingId, setDownloadingId] = useState<string | null>(null)
 
-  useEffect(() => {
-    if (!session?.access_token) return
-    let mounted = true
-
-    const fetchDocuments = async () => {
-      try {
-        const data = await documentsApi.list(session.access_token)
-        if (mounted) {
-          setDocuments(data)
-          setIsLoading(false)
-        }
-      } catch (err) {
-        if (mounted) {
-          setError(err instanceof Error ? err.message : 'Failed to load documents')
-          setIsLoading(false)
-        }
-      }
-    }
-
-    fetchDocuments()
-    return () => { mounted = false }
-  }, [session?.access_token])
-
   const handleUpload = async (e: React.FormEvent) => {
     e.preventDefault()
     const fileInput = fileInputRef.current
@@ -93,13 +73,13 @@ export const DocumentsList: React.FC = () => {
     setError(null)
 
     try {
-      const newDoc = await documentsApi.upload(session.access_token, file, {
+      await documentsApi.upload(session.access_token, file, {
         document_type: uploadDocType,
         display_name: uploadDisplayName.trim() || undefined,
         document_date: uploadDocDate || null,
         notes: uploadNotes.trim() || null,
       })
-      setDocuments([newDoc, ...documents])
+      onDocumentsChange()
       // Reset form
       if (fileInput) fileInput.value = ''
       setUploadDisplayName('')
@@ -157,8 +137,8 @@ export const DocumentsList: React.FC = () => {
         document_date: editDocDate || null,
         notes: editNotes.trim() || null,
       }
-      const updated = await documentsApi.update(session.access_token, id, payload)
-      setDocuments(documents.map(d => (d.id === id ? updated : d)))
+      await documentsApi.update(session.access_token, id, payload)
+      onDocumentsChange()
       setEditingId(null)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to update document')
@@ -176,7 +156,7 @@ export const DocumentsList: React.FC = () => {
     setError(null)
     try {
       await documentsApi.delete(session.access_token, deletingId)
-      setDocuments(documents.filter(d => d.id !== deletingId))
+      onDocumentsChange()
       setDeletingId(null)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to delete document')
@@ -184,7 +164,7 @@ export const DocumentsList: React.FC = () => {
     }
   }
 
-  if (isLoading) return <div data-testid="documents-loading">Loading documents...</div>
+
 
   return (
     <div data-testid="documents-list" className="p-4 border rounded shadow-sm bg-white mb-4">

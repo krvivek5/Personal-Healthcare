@@ -1,12 +1,11 @@
 import React, { useEffect, useState } from 'react'
 import { useAuth } from '../context/AuthContext'
-import { medicationsApi, documentsApi, Medication, MedicationCreate, MedicationUpdate, MedicalDocument } from '../lib/api'
+import { medicationsApi, Medication, MedicationCreate, MedicationUpdate, MedicalDocument } from '../lib/api'
 import { ProvenanceBadge } from './ProvenanceBadge'
 
-export const MedicationsList: React.FC = () => {
+export const MedicationsList: React.FC<{ documents: MedicalDocument[], onViewDocument?: (id: string) => void }> = ({ documents, onViewDocument }) => {
   const { session } = useAuth()
   const [medications, setMedications] = useState<Medication[]>([])
-  const [documents, setDocuments] = useState<MedicalDocument[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -35,13 +34,9 @@ export const MedicationsList: React.FC = () => {
 
     const fetchMedications = async () => {
       try {
-        const [medData, docData] = await Promise.all([
-          medicationsApi.list(session.access_token),
-          documentsApi.list(session.access_token)
-        ])
+        const medData = await medicationsApi.list(session.access_token)
         if (mounted) {
           setMedications(medData)
-          setDocuments(docData)
           setIsLoading(false)
         }
       } catch (err) {
@@ -333,11 +328,11 @@ export const MedicationsList: React.FC = () => {
                     sourceType={medication.source_type}
                     verificationState={medication.verification_state}
                   />
-                  {medication.source_id && (
+                  {medication.source_type === 'SOURCE_DOCUMENT' && medication.source_id && (
                     <button
                       data-testid={`link-document-${medication.source_id}`}
                       className="text-sm text-blue-600 underline"
-                      onClick={() => alert('View document ' + medication.source_id)}
+                      onClick={() => onViewDocument && onViewDocument(medication.source_id!)}
                     >
                       View Source
                     </button>

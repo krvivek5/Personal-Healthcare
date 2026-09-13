@@ -3,6 +3,16 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { Session, User } from '@supabase/supabase-js'
 import App from './App'
 import { supabase } from './lib/supabase'
+import { documentsApi, conditionsApi, symptomsApi, medicationsApi, allergiesApi, goalsApi } from './lib/api'
+
+vi.mock('./lib/api', () => ({
+  documentsApi: { list: vi.fn() },
+  conditionsApi: { list: vi.fn() },
+  symptomsApi: { list: vi.fn() },
+  medicationsApi: { list: vi.fn() },
+  allergiesApi: { list: vi.fn() },
+  goalsApi: { list: vi.fn() },
+}))
 
 vi.mock('./lib/supabase', () => ({
   supabase: {
@@ -45,6 +55,12 @@ describe('App Workspace & Progressive Identity Experience', () => {
         json: () => Promise.resolve({ status: 'healthy' }),
       })
     )
+    vi.mocked(documentsApi.list).mockResolvedValue([])
+    vi.mocked(conditionsApi.list).mockResolvedValue([])
+    vi.mocked(symptomsApi.list).mockResolvedValue([])
+    vi.mocked(medicationsApi.list).mockResolvedValue([])
+    vi.mocked(allergiesApi.list).mockResolvedValue([])
+    vi.mocked(goalsApi.list).mockResolvedValue([])
   })
 
   it('allows user to immediately reach the personal health workspace with anonymous session', async () => {

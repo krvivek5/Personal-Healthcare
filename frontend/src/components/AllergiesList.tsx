@@ -1,12 +1,11 @@
 import React, { useEffect, useState } from 'react'
 import { useAuth } from '../context/AuthContext'
-import { allergiesApi, documentsApi, Allergy, AllergyCreate, AllergyUpdate, MedicalDocument } from '../lib/api'
+import { allergiesApi, Allergy, AllergyCreate, AllergyUpdate, MedicalDocument } from '../lib/api'
 import { ProvenanceBadge } from './ProvenanceBadge'
 
-export const AllergiesList: React.FC = () => {
+export const AllergiesList: React.FC<{ documents: MedicalDocument[], onViewDocument?: (id: string) => void }> = ({ documents, onViewDocument }) => {
   const { session } = useAuth()
   const [allergies, setAllergies] = useState<Allergy[]>([])
-  const [documents, setDocuments] = useState<MedicalDocument[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -30,13 +29,9 @@ export const AllergiesList: React.FC = () => {
 
     const fetchAllergies = async () => {
       try {
-        const [allgData, docData] = await Promise.all([
-          allergiesApi.list(session.access_token),
-          documentsApi.list(session.access_token)
-        ])
+        const allgData = await allergiesApi.list(session.access_token)
         if (mounted) {
           setAllergies(allgData)
-          setDocuments(docData)
           setIsLoading(false)
         }
       } catch (err) {
@@ -272,11 +267,11 @@ export const AllergiesList: React.FC = () => {
                     sourceType={allergy.source_type}
                     verificationState={allergy.verification_state}
                   />
-                  {allergy.source_id && (
+                  {allergy.source_type === 'SOURCE_DOCUMENT' && allergy.source_id && (
                     <button
                       data-testid={`link-document-${allergy.source_id}`}
                       className="text-sm text-blue-600 underline"
-                      onClick={() => alert('View document ' + allergy.source_id)}
+                      onClick={() => onViewDocument && onViewDocument(allergy.source_id!)}
                     >
                       View Source
                     </button>
