@@ -5,6 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Medication
+from app.health.provenance import validate_and_resolve_provenance
 
 
 async def get_medications(db: AsyncSession, patient_id: uuid.UUID) -> list[Medication]:
@@ -30,10 +31,9 @@ async def get_medication_by_id(
 async def create_medication(
     db: AsyncSession, patient_id: uuid.UUID, data: dict[str, Any]
 ) -> Medication:
-    """Create a new medication for a patient, enforcing server-side provenance."""
-    medication_data = {k: v for k, v in data.items() if v is not None}
-    medication_data["source_type"] = "PATIENT_REPORTED"
-    medication = Medication(patient_id=patient_id, **medication_data)
+    """Create a new medication for a patient with validated provenance."""
+    data = await validate_and_resolve_provenance(db, patient_id, data)
+    medication = Medication(patient_id=patient_id, **data)
     db.add(medication)
     await db.commit()
     await db.refresh(medication)
@@ -41,12 +41,21 @@ async def create_medication(
 
 
 async def update_medication(
-    db: AsyncSession, medication: Medication, data: dict[str, Any]
+    db: AsyncSession,
+    medication: Medication,
+    data: dict[str, Any],
+    patient_id: uuid.UUID,
 ) -> Medication:
-    """Update an existing medication, ignoring any client-supplied source_type."""
+    """Update an existing medication with provenance validation."""
+    data = await validate_and_resolve_provenance(
+        db,
+        patient_id,
+        data,
+        existing_source_type=medication.source_type,
+        existing_source_id=medication.source_id,
+    )
     for key, value in data.items():
-        if key != "source_type":
-            setattr(medication, key, value)
+        setattr(medication, key, value)
     await db.commit()
     await db.refresh(medication)
     return medication

@@ -95,7 +95,7 @@ async def patch_medication(
             detail="Not authorized to access this resource",
         )
     data = medication_in.model_dump(exclude_unset=True)
-    updated = await update_medication(db, medication, data)
+    updated = await update_medication(db, medication, data, patient.id)
     return MedicationResponse.model_validate(updated)
 
 

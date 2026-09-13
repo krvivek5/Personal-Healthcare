@@ -44,3 +44,6 @@ Thumbs.db
 my-project/
 ~/
 docs/core-idea.md
+
+# Agents
+.agents/

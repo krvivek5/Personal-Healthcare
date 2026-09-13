@@ -9,6 +9,7 @@ from app.db.models import (
     Allergy,
     Condition,
     HealthProfile,
+    MedicalDocument,
     Medication,
     Patient,
     PatientGoal,
@@ -28,4 +29,5 @@ __all__ = [
     "Medication",
     "Allergy",
     "PatientGoal",
+    "MedicalDocument",
 ]

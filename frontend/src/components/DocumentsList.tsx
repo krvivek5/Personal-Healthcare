@@ -6,6 +6,7 @@ import {
   DocumentType,
   DocumentUpdate,
 } from '../lib/api'
+import { ProvenanceBadge } from './ProvenanceBadge'
 
 const DOCUMENT_TYPE_LABELS: Record<DocumentType, string> = {
   lab_report: 'Lab Report',
@@ -377,6 +378,12 @@ export const DocumentsList: React.FC = () => {
                     {doc.notes && (
                       <div className="text-xs text-gray-400 mt-1">{doc.notes}</div>
                     )}
+                    <div className="mt-1">
+                      <ProvenanceBadge
+                        sourceType={doc.source_type}
+                        verificationState={doc.verification_state}
+                      />
+                    </div>
                   </div>
                   <div className="flex gap-2 ml-4 shrink-0">
                     <button

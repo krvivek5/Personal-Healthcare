@@ -1,10 +1,12 @@
 import React, { useEffect, useState } from 'react'
 import { useAuth } from '../context/AuthContext'
-import { allergiesApi, Allergy, AllergyCreate, AllergyUpdate } from '../lib/api'
+import { allergiesApi, documentsApi, Allergy, AllergyCreate, AllergyUpdate, MedicalDocument } from '../lib/api'
+import { ProvenanceBadge } from './ProvenanceBadge'
 
 export const AllergiesList: React.FC = () => {
   const { session } = useAuth()
   const [allergies, setAllergies] = useState<Allergy[]>([])
+  const [documents, setDocuments] = useState<MedicalDocument[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -12,6 +14,8 @@ export const AllergiesList: React.FC = () => {
   const [allergen, setAllergen] = useState('')
   const [reaction, setReaction] = useState('')
   const [severity, setSeverity] = useState<'mild' | 'moderate' | 'severe' | 'life_threatening' | ''>('')
+  const [sourceType, setSourceType] = useState('PATIENT_REPORTED')
+  const [sourceId, setSourceId] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
 
   // Edit state
@@ -26,9 +30,13 @@ export const AllergiesList: React.FC = () => {
 
     const fetchAllergies = async () => {
       try {
-        const data = await allergiesApi.list(session.access_token)
+        const [allgData, docData] = await Promise.all([
+          allergiesApi.list(session.access_token),
+          documentsApi.list(session.access_token)
+        ])
         if (mounted) {
-          setAllergies(data)
+          setAllergies(allgData)
+          setDocuments(docData)
           setIsLoading(false)
         }
       } catch (err) {
@@ -55,12 +63,16 @@ export const AllergiesList: React.FC = () => {
         allergen: allergen.trim(),
         reaction: reaction.trim() || null,
         severity: severity === '' ? null : severity,
+        source_type: sourceType,
+        source_id: sourceType === 'SOURCE_DOCUMENT' ? sourceId : null,
       }
       const newAllergy = await allergiesApi.create(session.access_token, payload)
       setAllergies([...allergies, newAllergy])
       setAllergen('')
       setReaction('')
       setSeverity('')
+      setSourceType('PATIENT_REPORTED')
+      setSourceId('')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to add allergy')
     } finally {
@@ -149,9 +161,42 @@ export const AllergiesList: React.FC = () => {
             <option value="mild">Mild</option>
             <option value="moderate">Moderate</option>
             <option value="severe">Severe</option>
+            <option value="severe">Severe</option>
             <option value="life_threatening">Life Threatening</option>
           </select>
         </div>
+        <div>
+          <label className="block text-sm">Source Type</label>
+          <select
+            data-testid="input-allergy-source-type"
+            value={sourceType}
+            onChange={(e) => {
+              setSourceType(e.target.value)
+              if (e.target.value === 'PATIENT_REPORTED') setSourceId('')
+            }}
+            className="border p-2 rounded"
+          >
+            <option value="PATIENT_REPORTED">Patient Reported</option>
+            <option value="SOURCE_DOCUMENT">Source Document</option>
+          </select>
+        </div>
+        {sourceType === 'SOURCE_DOCUMENT' && (
+          <div>
+            <label className="block text-sm">Select Document</label>
+            <select
+              data-testid="input-allergy-source-id"
+              value={sourceId}
+              onChange={(e) => setSourceId(e.target.value)}
+              className="border p-2 rounded"
+              required
+            >
+              <option value="">-- Choose --</option>
+              {documents.map(d => (
+                <option key={d.id} value={d.id}>{d.display_name}</option>
+              ))}
+            </select>
+          </div>
+        )}
         <button
           type="submit"
           data-testid="btn-add-allergy"
@@ -222,6 +267,19 @@ export const AllergiesList: React.FC = () => {
                     <span className="text-sm text-gray-600 bg-gray-100 px-2 py-1 rounded">
                       {allergy.severity}
                     </span>
+                  )}
+                  <ProvenanceBadge
+                    sourceType={allergy.source_type}
+                    verificationState={allergy.verification_state}
+                  />
+                  {allergy.source_id && (
+                    <button
+                      data-testid={`link-document-${allergy.source_id}`}
+                      className="text-sm text-blue-600 underline"
+                      onClick={() => alert('View document ' + allergy.source_id)}
+                    >
+                      View Source
+                    </button>
                   )}
                 </div>
               )}

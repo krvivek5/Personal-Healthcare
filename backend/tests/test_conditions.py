@@ -315,7 +315,7 @@ async def test_provenance_assigned_server_side(async_client: AsyncClient):
     assert res.json()["source_type"] == "PATIENT_REPORTED"
     cond_id = res.json()["id"]
 
-    # 2. Attempt to create with client-supplied source_type
+    # 2. Attempt to create with restricted client-supplied source_type
     res_fake = await async_client.post(
         "/api/v1/conditions",
         headers={"Authorization": f"Bearer {token}"},
@@ -325,14 +325,49 @@ async def test_provenance_assigned_server_side(async_client: AsyncClient):
             "source_type": "CLINICIAN_CONFIRMED",
         },
     )
-    assert res_fake.status_code == 201
-    assert res_fake.json()["source_type"] == "PATIENT_REPORTED"
+    assert res_fake.status_code == 422
 
-    # 3. Attempt to update with client-supplied source_type
+    # 3. Attempt to update with restricted client-supplied source_type
     patch_res = await async_client.patch(
         f"/api/v1/conditions/{cond_id}",
         headers={"Authorization": f"Bearer {token}"},
-        json={"source_type": "SOURCE_DOCUMENT"},
+        json={"source_type": "CLINICIAN_CONFIRMED"},
     )
-    assert patch_res.status_code == 200
-    assert patch_res.json()["source_type"] == "PATIENT_REPORTED"
+    assert patch_res.status_code == 422
+
+
+async def test_verification_state_returns_422(async_client: AsyncClient):
+    """
+    Verify that submitting verification_state in Create/Update payloads returns 422.
+    """
+    user_id = str(uuid.uuid4())
+    token = create_test_token(user_id=user_id)
+
+    # 1. Attempt Create with verification_state
+    create_res = await async_client.post(
+        "/api/v1/conditions",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "name": "Diabetes",
+            "status": "active",
+            "verification_state": "PATIENT_REPORTED",
+        },
+    )
+    assert create_res.status_code == 422
+
+    # 2. Create a valid condition to test Update
+    valid_create_res = await async_client.post(
+        "/api/v1/conditions",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"name": "Diabetes", "status": "active"},
+    )
+    assert valid_create_res.status_code == 201
+    cond_id = valid_create_res.json()["id"]
+
+    # 3. Attempt Update with verification_state
+    update_res = await async_client.patch(
+        f"/api/v1/conditions/{cond_id}",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"verification_state": "PATIENT_REPORTED"},
+    )
+    assert update_res.status_code == 422

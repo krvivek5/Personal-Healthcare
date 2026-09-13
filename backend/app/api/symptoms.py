@@ -95,7 +95,7 @@ async def patch_symptom(
             detail="Not authorized to access this resource",
         )
     data = symptom_in.model_dump(exclude_unset=True)
-    updated = await update_symptom(db, symptom, data)
+    updated = await update_symptom(db, symptom, data, patient.id)
     return SymptomResponse.model_validate(updated)
 
 

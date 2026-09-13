@@ -5,6 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Condition
+from app.health.provenance import validate_and_resolve_provenance
 
 
 async def get_conditions(db: AsyncSession, patient_id: uuid.UUID) -> list[Condition]:
@@ -30,10 +31,9 @@ async def get_condition_by_id(
 async def create_condition(
     db: AsyncSession, patient_id: uuid.UUID, data: dict[str, Any]
 ) -> Condition:
-    """Create a new condition for a patient."""
-    condition_data = {k: v for k, v in data.items() if v is not None}
-    condition_data["source_type"] = "PATIENT_REPORTED"
-    condition = Condition(patient_id=patient_id, **condition_data)
+    """Create a new condition for a patient with validated provenance."""
+    data = await validate_and_resolve_provenance(db, patient_id, data)
+    condition = Condition(patient_id=patient_id, **data)
     db.add(condition)
     await db.commit()
     await db.refresh(condition)
@@ -41,12 +41,18 @@ async def create_condition(
 
 
 async def update_condition(
-    db: AsyncSession, condition: Condition, data: dict[str, Any]
+    db: AsyncSession, condition: Condition, data: dict[str, Any], patient_id: uuid.UUID
 ) -> Condition:
-    """Update an existing condition."""
+    """Update an existing condition with provenance validation."""
+    data = await validate_and_resolve_provenance(
+        db,
+        patient_id,
+        data,
+        existing_source_type=condition.source_type,
+        existing_source_id=condition.source_id,
+    )
     for key, value in data.items():
-        if key != "source_type":
-            setattr(condition, key, value)
+        setattr(condition, key, value)
     await db.commit()
     await db.refresh(condition)
     return condition

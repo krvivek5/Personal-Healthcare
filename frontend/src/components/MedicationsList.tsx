@@ -1,10 +1,12 @@
 import React, { useEffect, useState } from 'react'
 import { useAuth } from '../context/AuthContext'
-import { medicationsApi, Medication, MedicationCreate, MedicationUpdate } from '../lib/api'
+import { medicationsApi, documentsApi, Medication, MedicationCreate, MedicationUpdate, MedicalDocument } from '../lib/api'
+import { ProvenanceBadge } from './ProvenanceBadge'
 
 export const MedicationsList: React.FC = () => {
   const { session } = useAuth()
   const [medications, setMedications] = useState<Medication[]>([])
+  const [documents, setDocuments] = useState<MedicalDocument[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -15,6 +17,8 @@ export const MedicationsList: React.FC = () => {
   const [status, setStatus] = useState<'active' | 'stopped'>('active')
   const [asNeeded, setAsNeeded] = useState(false)
   const [startedAt, setStartedAt] = useState('')
+  const [sourceType, setSourceType] = useState('PATIENT_REPORTED')
+  const [sourceId, setSourceId] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
 
   // Edit state
@@ -31,9 +35,13 @@ export const MedicationsList: React.FC = () => {
 
     const fetchMedications = async () => {
       try {
-        const data = await medicationsApi.list(session.access_token)
+        const [medData, docData] = await Promise.all([
+          medicationsApi.list(session.access_token),
+          documentsApi.list(session.access_token)
+        ])
         if (mounted) {
-          setMedications(data)
+          setMedications(medData)
+          setDocuments(docData)
           setIsLoading(false)
         }
       } catch (err) {
@@ -63,6 +71,8 @@ export const MedicationsList: React.FC = () => {
         status,
         as_needed: asNeeded,
         ...(startedAt ? { started_at: startedAt } : {}),
+        source_type: sourceType,
+        source_id: sourceType === 'SOURCE_DOCUMENT' ? sourceId : null,
       }
       const newMed = await medicationsApi.create(session.access_token, payload)
       setMedications([...medications, newMed])
@@ -72,6 +82,8 @@ export const MedicationsList: React.FC = () => {
       setStatus('active')
       setAsNeeded(false)
       setStartedAt('')
+      setSourceType('PATIENT_REPORTED')
+      setSourceId('')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to add medication')
     } finally {
@@ -195,6 +207,38 @@ export const MedicationsList: React.FC = () => {
             As needed (PRN)
           </label>
         </div>
+        <div>
+          <label className="block text-sm">Source Type</label>
+          <select
+            data-testid="input-med-source-type"
+            value={sourceType}
+            onChange={(e) => {
+              setSourceType(e.target.value)
+              if (e.target.value === 'PATIENT_REPORTED') setSourceId('')
+            }}
+            className="border p-2 rounded"
+          >
+            <option value="PATIENT_REPORTED">Patient Reported</option>
+            <option value="SOURCE_DOCUMENT">Source Document</option>
+          </select>
+        </div>
+        {sourceType === 'SOURCE_DOCUMENT' && (
+          <div>
+            <label className="block text-sm">Select Document</label>
+            <select
+              data-testid="input-med-source-id"
+              value={sourceId}
+              onChange={(e) => setSourceId(e.target.value)}
+              className="border p-2 rounded"
+              required
+            >
+              <option value="">-- Choose --</option>
+              {documents.map(d => (
+                <option key={d.id} value={d.id}>{d.display_name}</option>
+              ))}
+            </select>
+          </div>
+        )}
         <button
           type="submit"
           data-testid="btn-add-med"
@@ -284,6 +328,19 @@ export const MedicationsList: React.FC = () => {
                     <span className="text-sm text-blue-600 bg-blue-100 px-2 py-1 rounded">
                       PRN
                     </span>
+                  )}
+                  <ProvenanceBadge
+                    sourceType={medication.source_type}
+                    verificationState={medication.verification_state}
+                  />
+                  {medication.source_id && (
+                    <button
+                      data-testid={`link-document-${medication.source_id}`}
+                      className="text-sm text-blue-600 underline"
+                      onClick={() => alert('View document ' + medication.source_id)}
+                    >
+                      View Source
+                    </button>
                   )}
                 </div>
               )}

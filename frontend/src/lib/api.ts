@@ -97,6 +97,8 @@ export interface Condition {
   recorded_at: string
   notes: string | null
   source_type: string
+  source_id: string | null
+  verification_state: string
   created_at: string
   updated_at: string
 }
@@ -108,6 +110,8 @@ export interface ConditionCreate {
   started_at?: string | null
   ended_at?: string | null
   notes?: string | null
+  source_type?: string
+  source_id?: string | null
 }
 
 export interface ConditionUpdate {
@@ -117,6 +121,8 @@ export interface ConditionUpdate {
   started_at?: string | null
   ended_at?: string | null
   notes?: string | null
+  source_type?: string
+  source_id?: string | null
 }
 
 export interface Symptom {
@@ -129,6 +135,8 @@ export interface Symptom {
   recorded_at: string
   notes: string | null
   source_type: string
+  source_id: string | null
+  verification_state: string
   created_at: string
   updated_at: string
 }
@@ -139,6 +147,8 @@ export interface SymptomCreate {
   started_at?: string | null
   ended_at?: string | null
   notes?: string | null
+  source_type?: string
+  source_id?: string | null
 }
 
 export interface SymptomUpdate {
@@ -147,6 +157,8 @@ export interface SymptomUpdate {
   started_at?: string | null
   ended_at?: string | null
   notes?: string | null
+  source_type?: string
+  source_id?: string | null
 }
 
 export interface Medication {
@@ -162,6 +174,8 @@ export interface Medication {
   recorded_at: string
   notes: string | null
   source_type: string
+  source_id: string | null
+  verification_state: string
   created_at: string
   updated_at: string
 }
@@ -175,6 +189,8 @@ export interface MedicationCreate {
   started_at?: string | null
   ended_at?: string | null
   notes?: string | null
+  source_type?: string
+  source_id?: string | null
 }
 
 export interface MedicationUpdate {
@@ -186,6 +202,8 @@ export interface MedicationUpdate {
   started_at?: string | null
   ended_at?: string | null
   notes?: string | null
+  source_type?: string
+  source_id?: string | null
 }
 
 export interface Allergy {
@@ -197,6 +215,8 @@ export interface Allergy {
   recorded_at: string
   notes: string | null
   source_type: string
+  source_id: string | null
+  verification_state: string
   created_at: string
   updated_at: string
 }
@@ -206,6 +226,8 @@ export interface AllergyCreate {
   reaction?: string | null
   severity?: 'mild' | 'moderate' | 'severe' | 'life_threatening' | null
   notes?: string | null
+  source_type?: string
+  source_id?: string | null
 }
 
 export interface AllergyUpdate {
@@ -213,6 +235,8 @@ export interface AllergyUpdate {
   reaction?: string | null
   severity?: 'mild' | 'moderate' | 'severe' | 'life_threatening' | null
   notes?: string | null
+  source_type?: string
+  source_id?: string | null
 }
 
 export interface Goal {
@@ -223,6 +247,9 @@ export interface Goal {
   target_date: string | null
   recorded_at: string
   notes: string | null
+  source_type: string
+  source_id: string | null
+  verification_state: string
   created_at: string
   updated_at: string
 }
@@ -232,6 +259,8 @@ export interface GoalCreate {
   status: 'active' | 'achieved' | 'abandoned'
   target_date?: string | null
   notes?: string | null
+  source_type?: string
+  source_id?: string | null
 }
 
 export interface GoalUpdate {
@@ -239,6 +268,8 @@ export interface GoalUpdate {
   status?: 'active' | 'achieved' | 'abandoned'
   target_date?: string | null
   notes?: string | null
+  source_type?: string
+  source_id?: string | null
 }
 
 // ─── Health Profile ───────────────────────────────────────────────────────────
@@ -367,6 +398,7 @@ export interface MedicalDocument {
   document_date: string | null
   notes: string | null
   source_type: string
+  verification_state: string
   uploaded_at: string
   created_at: string
   updated_at: string

@@ -63,12 +63,31 @@ def test_pg_pk_fk_constraints(pg_engine):
 
         if table_name != "patients":
             fks = insp.get_foreign_keys(table_name)
-            assert len(fks) == 1, f"{table_name} must have exactly one foreign key"
-            fk = fks[0]
+
+            # Extract the patient_id foreign key which is present on all these tables
+            patient_fks = [
+                fk for fk in fks if fk["constrained_columns"] == ["patient_id"]
+            ]
+            assert len(patient_fks) == 1, (
+                f"{table_name} must have patient_id foreign key"
+            )
+            fk = patient_fks[0]
             assert fk["referred_table"] == "patients"
             assert fk["referred_columns"] == ["id"]
-            assert fk["constrained_columns"] == ["patient_id"]
             assert fk["options"].get("ondelete") == "CASCADE"
+
+            # Clinical tables now also have a source_id foreign key
+            if table_name not in ["health_profiles", "medical_documents"]:
+                source_fks = [
+                    fk for fk in fks if fk["constrained_columns"] == ["source_id"]
+                ]
+                assert len(source_fks) == 1, (
+                    f"{table_name} must have source_id foreign key"
+                )
+                fk = source_fks[0]
+                assert fk["referred_table"] == "medical_documents"
+                assert fk["referred_columns"] == ["id"]
+                assert fk["options"].get("ondelete") == "SET NULL"
 
 
 def test_pg_unique_constraints(pg_engine):

@@ -95,7 +95,7 @@ async def patch_condition(
             detail="Not authorized to access this resource",
         )
     data = condition_in.model_dump(exclude_unset=True)
-    updated = await update_condition(db, condition, data)
+    updated = await update_condition(db, condition, data, patient.id)
     return ConditionResponse.model_validate(updated)
 
 

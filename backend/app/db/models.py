@@ -196,6 +196,18 @@ class Condition(Base):
         default="PATIENT_REPORTED",
         server_default="PATIENT_REPORTED",
     )
+    source_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("medical_documents.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    verification_state: Mapped[str] = mapped_column(
+        String(50),
+        nullable=False,
+        default="PATIENT_REPORTED",
+        server_default="PATIENT_REPORTED",
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -257,6 +269,18 @@ class Symptom(Base):
         nullable=True,
     )
     source_type: Mapped[str] = mapped_column(
+        String(50),
+        nullable=False,
+        default="PATIENT_REPORTED",
+        server_default="PATIENT_REPORTED",
+    )
+    source_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("medical_documents.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    verification_state: Mapped[str] = mapped_column(
         String(50),
         nullable=False,
         default="PATIENT_REPORTED",
@@ -342,6 +366,18 @@ class Medication(Base):
         default="PATIENT_REPORTED",
         server_default="PATIENT_REPORTED",
     )
+    source_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("medical_documents.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    verification_state: Mapped[str] = mapped_column(
+        String(50),
+        nullable=False,
+        default="PATIENT_REPORTED",
+        server_default="PATIENT_REPORTED",
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -404,6 +440,18 @@ class Allergy(Base):
         default="PATIENT_REPORTED",
         server_default="PATIENT_REPORTED",
     )
+    source_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("medical_documents.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    verification_state: Mapped[str] = mapped_column(
+        String(50),
+        nullable=False,
+        default="PATIENT_REPORTED",
+        server_default="PATIENT_REPORTED",
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -460,6 +508,24 @@ class PatientGoal(Base):
         Text,
         nullable=True,
     )
+    source_type: Mapped[str] = mapped_column(
+        String(50),
+        nullable=False,
+        default="PATIENT_REPORTED",
+        server_default="PATIENT_REPORTED",
+    )
+    source_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("medical_documents.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    verification_state: Mapped[str] = mapped_column(
+        String(50),
+        nullable=False,
+        default="PATIENT_REPORTED",
+        server_default="PATIENT_REPORTED",
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -484,6 +550,11 @@ class MedicalDocument(Base):
 
     The original file is stored in S3 under storage_key.
     storage_key is internal and must never be exposed to API clients.
+
+    Provenance invariants (enforced via DB CHECK constraints in migration 0003):
+      - source_type is always 'PATIENT_REPORTED'
+      - verification_state is always 'PATIENT_REPORTED'
+      - No source_id column (no document-to-document chains)
     """
 
     __tablename__ = "medical_documents"
@@ -533,6 +604,12 @@ class MedicalDocument(Base):
         nullable=True,
     )
     source_type: Mapped[str] = mapped_column(
+        String(50),
+        nullable=False,
+        default="PATIENT_REPORTED",
+        server_default="PATIENT_REPORTED",
+    )
+    verification_state: Mapped[str] = mapped_column(
         String(50),
         nullable=False,
         default="PATIENT_REPORTED",

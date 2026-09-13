@@ -34,8 +34,10 @@ async def test_create_goal_and_defaults(async_client: AsyncClient):
     assert data["recorded_at"] is not None
     assert data["created_at"] is not None
     assert data["updated_at"] is not None
-    # Goals have no source_type
-    assert "source_type" not in data
+    assert "source_type" in data
+    assert data["source_type"] == "PATIENT_REPORTED"
+    assert "verification_state" in data
+    assert data["verification_state"] == "PATIENT_REPORTED"
 
 
 async def test_crud_lifecycle(async_client: AsyncClient):

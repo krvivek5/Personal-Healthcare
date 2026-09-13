@@ -23,6 +23,12 @@ vi.mock('../context/AuthContext', () => ({
 
 // Mock all API clients
 vi.mock('../lib/api', () => ({
+  documentsApi: {
+    list: vi.fn(),
+    create: vi.fn(),
+    delete: vi.fn(),
+    getDownloadUrl: vi.fn(),
+  },
   conditionsApi: {
     list: vi.fn(),
     create: vi.fn(),
@@ -111,14 +117,12 @@ describe('Clinical Entity Lists', () => {
         expect(conditionsApi.create).toHaveBeenCalledWith(mockToken, {
           name: 'Asthma',
           status: 'active',
-          is_chronic: false
+          is_chronic: false,
+          source_type: 'PATIENT_REPORTED',
+          source_id: null
         })
       })
       expect(screen.getByText('Asthma')).toBeInTheDocument()
-      
-      // Ensure source_type is absent from the payload!
-      const callArg = vi.mocked(conditionsApi.create).mock.calls[0][1]
-      expect(callArg).not.toHaveProperty('source_type')
     })
 
     it('edits a condition', async () => {
@@ -202,12 +206,11 @@ describe('Clinical Entity Lists', () => {
       await waitFor(() => {
         expect(symptomsApi.create).toHaveBeenCalledWith(mockToken, {
           name: 'Fever',
-          severity: 'severe'
+          severity: 'severe',
+          source_type: 'PATIENT_REPORTED',
+          source_id: null
         })
       })
-      
-      const callArg = vi.mocked(symptomsApi.create).mock.calls[0][1]
-      expect(callArg).not.toHaveProperty('source_type')
     })
 
     it('edits a symptom', async () => {
@@ -295,12 +298,11 @@ describe('Clinical Entity Lists', () => {
           dosage: '81mg',
           frequency: null,
           status: 'active',
-          as_needed: false
+          as_needed: false,
+          source_type: 'PATIENT_REPORTED',
+          source_id: null
         })
       })
-      
-      const callArg = vi.mocked(medicationsApi.create).mock.calls[0][1]
-      expect(callArg).not.toHaveProperty('source_type')
     })
 
     it('edits a medication', async () => {
@@ -384,12 +386,11 @@ describe('Clinical Entity Lists', () => {
         expect(allergiesApi.create).toHaveBeenCalledWith(mockToken, {
           allergen: 'Dust',
           reaction: null,
-          severity: null
+          severity: null,
+          source_type: 'PATIENT_REPORTED',
+          source_id: null
         })
       })
-      
-      const callArg = vi.mocked(allergiesApi.create).mock.calls[0][1]
-      expect(callArg).not.toHaveProperty('source_type')
     })
 
     it('edits an allergy', async () => {
@@ -470,12 +471,11 @@ describe('Clinical Entity Lists', () => {
         expect(goalsApi.create).toHaveBeenCalledWith(mockToken, {
           description: 'Drink water',
           status: 'active',
-          target_date: null
+          target_date: null,
+          source_type: 'PATIENT_REPORTED',
+          source_id: null
         })
       })
-      
-      const callArg = vi.mocked(goalsApi.create).mock.calls[0][1]
-      expect(callArg).not.toHaveProperty('source_type')
     })
 
     it('edits a goal', async () => {

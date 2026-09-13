@@ -1,16 +1,20 @@
 import React, { useEffect, useState } from 'react'
 import { useAuth } from '../context/AuthContext'
-import { symptomsApi, Symptom, SymptomCreate, SymptomUpdate } from '../lib/api'
+import { symptomsApi, documentsApi, Symptom, SymptomCreate, SymptomUpdate, MedicalDocument } from '../lib/api'
+import { ProvenanceBadge } from './ProvenanceBadge'
 
 export const SymptomsList: React.FC = () => {
   const { session } = useAuth()
   const [symptoms, setSymptoms] = useState<Symptom[]>([])
+  const [documents, setDocuments] = useState<MedicalDocument[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
   // Form state
   const [name, setName] = useState('')
   const [severity, setSeverity] = useState<'mild' | 'moderate' | 'severe' | ''>('')
+  const [sourceType, setSourceType] = useState('PATIENT_REPORTED')
+  const [sourceId, setSourceId] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
 
   // Edit state
@@ -24,9 +28,13 @@ export const SymptomsList: React.FC = () => {
 
     const fetchSymptoms = async () => {
       try {
-        const data = await symptomsApi.list(session.access_token)
+        const [symData, docData] = await Promise.all([
+          symptomsApi.list(session.access_token),
+          documentsApi.list(session.access_token)
+        ])
         if (mounted) {
-          setSymptoms(data)
+          setSymptoms(symData)
+          setDocuments(docData)
           setIsLoading(false)
         }
       } catch (err) {
@@ -52,11 +60,15 @@ export const SymptomsList: React.FC = () => {
       const payload: SymptomCreate = {
         name: name.trim(),
         severity: severity === '' ? null : severity,
+        source_type: sourceType,
+        source_id: sourceType === 'SOURCE_DOCUMENT' ? sourceId : null,
       }
       const newSymptom = await symptomsApi.create(session.access_token, payload)
       setSymptoms([...symptoms, newSymptom])
       setName('')
       setSeverity('')
+      setSourceType('PATIENT_REPORTED')
+      setSourceId('')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to add symptom')
     } finally {
@@ -135,6 +147,38 @@ export const SymptomsList: React.FC = () => {
             <option value="severe">Severe</option>
           </select>
         </div>
+        <div>
+          <label className="block text-sm">Source Type</label>
+          <select
+            data-testid="input-symptom-source-type"
+            value={sourceType}
+            onChange={(e) => {
+              setSourceType(e.target.value)
+              if (e.target.value === 'PATIENT_REPORTED') setSourceId('')
+            }}
+            className="border p-2 rounded"
+          >
+            <option value="PATIENT_REPORTED">Patient Reported</option>
+            <option value="SOURCE_DOCUMENT">Source Document</option>
+          </select>
+        </div>
+        {sourceType === 'SOURCE_DOCUMENT' && (
+          <div>
+            <label className="block text-sm">Select Document</label>
+            <select
+              data-testid="input-symptom-source-id"
+              value={sourceId}
+              onChange={(e) => setSourceId(e.target.value)}
+              className="border p-2 rounded"
+              required
+            >
+              <option value="">-- Choose --</option>
+              {documents.map(d => (
+                <option key={d.id} value={d.id}>{d.display_name}</option>
+              ))}
+            </select>
+          </div>
+        )}
         <button
           type="submit"
           data-testid="btn-add-symptom"
@@ -188,12 +232,25 @@ export const SymptomsList: React.FC = () => {
                   </button>
                 </div>
               ) : (
-                <div className="flex gap-2 items-center">
+                <div className="flex gap-2 items-center flex-wrap">
                   <span className="font-medium">{symptom.name}</span>
                   {symptom.severity && (
                     <span className="text-sm text-gray-600 bg-gray-100 px-2 py-1 rounded">
                       {symptom.severity}
                     </span>
+                  )}
+                  <ProvenanceBadge
+                    sourceType={symptom.source_type}
+                    verificationState={symptom.verification_state}
+                  />
+                  {symptom.source_id && (
+                    <button
+                      data-testid={`link-document-${symptom.source_id}`}
+                      className="text-sm text-blue-600 underline"
+                      onClick={() => alert('View document ' + symptom.source_id)}
+                    >
+                      View Source
+                    </button>
                   )}
                 </div>
               )}

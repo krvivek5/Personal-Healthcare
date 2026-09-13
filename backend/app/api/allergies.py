@@ -95,7 +95,7 @@ async def patch_allergy(
             detail="Not authorized to access this resource",
         )
     data = allergy_in.model_dump(exclude_unset=True)
-    updated = await update_allergy(db, allergy, data)
+    updated = await update_allergy(db, allergy, data, patient.id)
     return AllergyResponse.model_validate(updated)
 
 

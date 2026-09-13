@@ -3,6 +3,12 @@ Pydantic schemas for medical documents.
 
 Security constraint: DocumentResponse explicitly excludes storage_key and
 any other internal S3 identifiers. Clients must never receive the S3 key.
+
+M6 Provenance Contract for medical_documents:
+  - Upload and update payloads MUST NOT include source_type, source_id, or
+    verification_state. Any attempt returns HTTP 422 (no silent ignore).
+  - DocumentResponse exposes source_type and verification_state only.
+    No source_id is exposed (no document-to-document chains).
 """
 
 from __future__ import annotations
@@ -11,7 +17,7 @@ import uuid
 from datetime import date, datetime
 from typing import Literal, Optional
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 
 # ── Document type enum ─────────────────────────────────────────────────────────
 
@@ -24,6 +30,22 @@ DocumentType = Literal[
     "other",
 ]
 
+# ── Provenance rejection helper ────────────────────────────────────────────────
+
+_REJECTED_FIELDS = frozenset({"source_type", "source_id", "verification_state"})
+
+
+def _reject_provenance_fields(data: dict) -> None:
+    """Raise ValueError if the payload contains any provenance field."""
+    present = _REJECTED_FIELDS & data.keys()
+    if present:
+        field_list = ", ".join(sorted(present))
+        raise ValueError(
+            "Medical document payloads must not include provenance fields: "
+            f"{field_list}. These values are locked server-side."
+        )
+
+
 # ── Response schema ────────────────────────────────────────────────────────────
 
 
@@ -33,6 +55,10 @@ class DocumentResponse(BaseModel):
 
     storage_key is intentionally absent — it is an internal S3 identifier
     that must never be exposed to API clients.
+
+    source_id is intentionally absent — medical_documents do not chain to
+    other documents. source_type and verification_state are always
+    'PATIENT_REPORTED' (enforced by DB CHECK constraints).
     """
 
     id: uuid.UUID
@@ -45,6 +71,7 @@ class DocumentResponse(BaseModel):
     document_date: Optional[date]
     notes: Optional[str]
     source_type: str
+    verification_state: str
     uploaded_at: datetime
     created_at: datetime
     updated_at: datetime
@@ -56,9 +83,18 @@ class DocumentResponse(BaseModel):
 
 
 class DocumentUpdate(BaseModel):
-    """Mutable metadata fields that a client may update."""
+    """Mutable metadata fields that a client may update.
+
+    Explicitly rejects source_type, source_id, and verification_state.
+    """
 
     display_name: Optional[str] = None
     document_type: Optional[DocumentType] = None
     document_date: Optional[date] = None
     notes: Optional[str] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_provenance_fields(cls, data: dict) -> dict:
+        _reject_provenance_fields(data)
+        return data

@@ -87,7 +87,7 @@ async def patch_goal(
             detail="Not authorized to access this resource",
         )
     data = goal_in.model_dump(exclude_unset=True)
-    updated = await update_goal(db, goal, data)
+    updated = await update_goal(db, goal, data, patient.id)
     return GoalResponse.model_validate(updated)
 
 

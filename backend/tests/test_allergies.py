@@ -273,23 +273,22 @@ async def test_provenance_assigned_server_side(async_client: AsyncClient):
     assert res.json()["source_type"] == "PATIENT_REPORTED"
     alg_id = res.json()["id"]
 
-    # 2. Create with client-supplied source_type (extra field, ignored by schema)
+    # 2. Create with restricted client-supplied source_type
     res_fake = await async_client.post(
         "/api/v1/allergies",
         headers={"Authorization": f"Bearer {token}"},
         json={
-            "allergen": "Soy",
+            "allergen": "Dust",
+            "severity": "mild",
             "source_type": "CLINICIAN_CONFIRMED",
         },
     )
-    assert res_fake.status_code == 201
-    assert res_fake.json()["source_type"] == "PATIENT_REPORTED"
+    assert res_fake.status_code == 422
 
-    # 3. Attempt to PATCH source_type (extra field, ignored by schema)
+    # 3. Update with restricted client-supplied source_type
     patch_res = await async_client.patch(
         f"/api/v1/allergies/{alg_id}",
         headers={"Authorization": f"Bearer {token}"},
-        json={"source_type": "SOURCE_DOCUMENT"},
+        json={"source_type": "CLINICIAN_CONFIRMED"},
     )
-    assert patch_res.status_code == 200
-    assert patch_res.json()["source_type"] == "PATIENT_REPORTED"
+    assert patch_res.status_code == 422

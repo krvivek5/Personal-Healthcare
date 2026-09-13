@@ -5,6 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import PatientGoal
+from app.health.provenance import validate_and_resolve_provenance
 
 
 async def get_goals(db: AsyncSession, patient_id: uuid.UUID) -> list[PatientGoal]:
@@ -28,9 +29,9 @@ async def get_goal_by_id(db: AsyncSession, goal_id: uuid.UUID) -> Optional[Patie
 async def create_goal(
     db: AsyncSession, patient_id: uuid.UUID, data: dict[str, Any]
 ) -> PatientGoal:
-    """Create a new goal for a patient."""
-    goal_data = {k: v for k, v in data.items() if v is not None}
-    goal = PatientGoal(patient_id=patient_id, **goal_data)
+    """Create a new goal for a patient with validated provenance."""
+    data = await validate_and_resolve_provenance(db, patient_id, data)
+    goal = PatientGoal(patient_id=patient_id, **data)
     db.add(goal)
     await db.commit()
     await db.refresh(goal)
@@ -38,9 +39,16 @@ async def create_goal(
 
 
 async def update_goal(
-    db: AsyncSession, goal: PatientGoal, data: dict[str, Any]
+    db: AsyncSession, goal: PatientGoal, data: dict[str, Any], patient_id: uuid.UUID
 ) -> PatientGoal:
-    """Update an existing goal with the supplied fields."""
+    """Update an existing goal with provenance validation."""
+    data = await validate_and_resolve_provenance(
+        db,
+        patient_id,
+        data,
+        existing_source_type=goal.source_type,
+        existing_source_id=goal.source_id,
+    )
     for key, value in data.items():
         setattr(goal, key, value)
     await db.commit()

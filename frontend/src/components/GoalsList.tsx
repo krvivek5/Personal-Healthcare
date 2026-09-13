@@ -1,10 +1,12 @@
 import React, { useEffect, useState } from 'react'
 import { useAuth } from '../context/AuthContext'
-import { goalsApi, Goal, GoalCreate, GoalUpdate } from '../lib/api'
+import { goalsApi, documentsApi, Goal, GoalCreate, GoalUpdate, MedicalDocument } from '../lib/api'
+import { ProvenanceBadge } from './ProvenanceBadge'
 
 export const GoalsList: React.FC = () => {
   const { session } = useAuth()
   const [goals, setGoals] = useState<Goal[]>([])
+  const [documents, setDocuments] = useState<MedicalDocument[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -12,6 +14,8 @@ export const GoalsList: React.FC = () => {
   const [description, setDescription] = useState('')
   const [status, setStatus] = useState<'active' | 'achieved' | 'abandoned'>('active')
   const [targetDate, setTargetDate] = useState('')
+  const [sourceType, setSourceType] = useState('PATIENT_REPORTED')
+  const [sourceId, setSourceId] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
 
   // Edit state
@@ -26,9 +30,13 @@ export const GoalsList: React.FC = () => {
 
     const fetchGoals = async () => {
       try {
-        const data = await goalsApi.list(session.access_token)
+        const [goalData, docData] = await Promise.all([
+          goalsApi.list(session.access_token),
+          documentsApi.list(session.access_token)
+        ])
         if (mounted) {
-          setGoals(data)
+          setGoals(goalData)
+          setDocuments(docData)
           setIsLoading(false)
         }
       } catch (err) {
@@ -55,12 +63,16 @@ export const GoalsList: React.FC = () => {
         description: description.trim(),
         status,
         target_date: targetDate || null,
+        source_type: sourceType,
+        source_id: sourceType === 'SOURCE_DOCUMENT' ? sourceId : null,
       }
       const newGoal = await goalsApi.create(session.access_token, payload)
       setGoals([...goals, newGoal])
       setDescription('')
       setStatus('active')
       setTargetDate('')
+      setSourceType('PATIENT_REPORTED')
+      setSourceId('')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to add goal')
     } finally {
@@ -147,9 +159,42 @@ export const GoalsList: React.FC = () => {
           >
             <option value="active">Active</option>
             <option value="achieved">Achieved</option>
+            <option value="achieved">Achieved</option>
             <option value="abandoned">Abandoned</option>
           </select>
         </div>
+        <div>
+          <label className="block text-sm">Source Type</label>
+          <select
+            data-testid="input-goal-source-type"
+            value={sourceType}
+            onChange={(e) => {
+              setSourceType(e.target.value)
+              if (e.target.value === 'PATIENT_REPORTED') setSourceId('')
+            }}
+            className="border p-2 rounded"
+          >
+            <option value="PATIENT_REPORTED">Patient Reported</option>
+            <option value="SOURCE_DOCUMENT">Source Document</option>
+          </select>
+        </div>
+        {sourceType === 'SOURCE_DOCUMENT' && (
+          <div>
+            <label className="block text-sm">Select Document</label>
+            <select
+              data-testid="input-goal-source-id"
+              value={sourceId}
+              onChange={(e) => setSourceId(e.target.value)}
+              className="border p-2 rounded"
+              required
+            >
+              <option value="">-- Choose --</option>
+              {documents.map(d => (
+                <option key={d.id} value={d.id}>{d.display_name}</option>
+              ))}
+            </select>
+          </div>
+        )}
         <button
           type="submit"
           data-testid="btn-add-goal"
@@ -217,6 +262,19 @@ export const GoalsList: React.FC = () => {
                   <span className="text-sm text-gray-600 bg-gray-100 px-2 py-1 rounded">
                     {goal.status}
                   </span>
+                  <ProvenanceBadge
+                    sourceType={goal.source_type}
+                    verificationState={goal.verification_state}
+                  />
+                  {goal.source_id && (
+                    <button
+                      data-testid={`link-document-${goal.source_id}`}
+                      className="text-sm text-blue-600 underline"
+                      onClick={() => alert('View document ' + goal.source_id)}
+                    >
+                      View Source
+                    </button>
+                  )}
                 </div>
               )}
 

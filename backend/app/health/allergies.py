@@ -5,6 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Allergy
+from app.health.provenance import validate_and_resolve_provenance
 
 
 async def get_allergies(db: AsyncSession, patient_id: uuid.UUID) -> list[Allergy]:
@@ -30,10 +31,9 @@ async def get_allergy_by_id(
 async def create_allergy(
     db: AsyncSession, patient_id: uuid.UUID, data: dict[str, Any]
 ) -> Allergy:
-    """Create a new allergy for a patient, enforcing server-side provenance."""
-    allergy_data = {k: v for k, v in data.items() if v is not None}
-    allergy_data["source_type"] = "PATIENT_REPORTED"
-    allergy = Allergy(patient_id=patient_id, **allergy_data)
+    """Create a new allergy for a patient with validated provenance."""
+    data = await validate_and_resolve_provenance(db, patient_id, data)
+    allergy = Allergy(patient_id=patient_id, **data)
     db.add(allergy)
     await db.commit()
     await db.refresh(allergy)
@@ -41,12 +41,18 @@ async def create_allergy(
 
 
 async def update_allergy(
-    db: AsyncSession, allergy: Allergy, data: dict[str, Any]
+    db: AsyncSession, allergy: Allergy, data: dict[str, Any], patient_id: uuid.UUID
 ) -> Allergy:
-    """Update an existing allergy, ignoring any client-supplied source_type."""
+    """Update an existing allergy with provenance validation."""
+    data = await validate_and_resolve_provenance(
+        db,
+        patient_id,
+        data,
+        existing_source_type=allergy.source_type,
+        existing_source_id=allergy.source_id,
+    )
     for key, value in data.items():
-        if key != "source_type":
-            setattr(allergy, key, value)
+        setattr(allergy, key, value)
     await db.commit()
     await db.refresh(allergy)
     return allergy

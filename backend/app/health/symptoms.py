@@ -5,6 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Symptom
+from app.health.provenance import validate_and_resolve_provenance
 
 
 async def get_symptoms(db: AsyncSession, patient_id: uuid.UUID) -> list[Symptom]:
@@ -30,10 +31,9 @@ async def get_symptom_by_id(
 async def create_symptom(
     db: AsyncSession, patient_id: uuid.UUID, data: dict[str, Any]
 ) -> Symptom:
-    """Create a new symptom for a patient, enforcing server-side provenance."""
-    symptom_data = {k: v for k, v in data.items() if v is not None}
-    symptom_data["source_type"] = "PATIENT_REPORTED"
-    symptom = Symptom(patient_id=patient_id, **symptom_data)
+    """Create a new symptom for a patient with validated provenance."""
+    data = await validate_and_resolve_provenance(db, patient_id, data)
+    symptom = Symptom(patient_id=patient_id, **data)
     db.add(symptom)
     await db.commit()
     await db.refresh(symptom)
@@ -41,12 +41,18 @@ async def create_symptom(
 
 
 async def update_symptom(
-    db: AsyncSession, symptom: Symptom, data: dict[str, Any]
+    db: AsyncSession, symptom: Symptom, data: dict[str, Any], patient_id: uuid.UUID
 ) -> Symptom:
-    """Update an existing symptom, ignoring any client-supplied source_type."""
+    """Update an existing symptom with provenance validation."""
+    data = await validate_and_resolve_provenance(
+        db,
+        patient_id,
+        data,
+        existing_source_type=symptom.source_type,
+        existing_source_id=symptom.source_id,
+    )
     for key, value in data.items():
-        if key != "source_type":
-            setattr(symptom, key, value)
+        setattr(symptom, key, value)
     await db.commit()
     await db.refresh(symptom)
     return symptom

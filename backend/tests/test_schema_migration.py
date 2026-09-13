@@ -65,6 +65,7 @@ def test_alembic_offline_sql_generation_postgresql(capsys):
         "CREATE TABLE medications",
         "CREATE TABLE allergies",
         "CREATE TABLE patient_goals",
+        "CREATE TABLE medical_documents",
     ]
     for table_ddl in expected_tables:
         assert table_ddl in sql_output, f"Missing {table_ddl} in generated SQL"
@@ -85,6 +86,10 @@ def test_alembic_offline_sql_generation_postgresql(capsys):
 
     # Verify source_type defaults
     assert "source_type VARCHAR(50) DEFAULT 'PATIENT_REPORTED' NOT NULL" in sql_output
+    assert (
+        "verification_state VARCHAR(50) DEFAULT 'PATIENT_REPORTED' NOT NULL"
+        in sql_output
+    )
 
 
 def test_migration_creates_expected_tables(migrated_db):
@@ -101,6 +106,7 @@ def test_migration_creates_expected_tables(migrated_db):
         "medications",
         "allergies",
         "patient_goals",
+        "medical_documents",
     }
     assert expected_tables.issubset(tables)
 
@@ -141,7 +147,9 @@ def test_migration_table_columns(migrated_db):
         "ended_at",
         "recorded_at",
         "notes",
+        "source_id",
         "source_type",
+        "verification_state",
         "created_at",
         "updated_at",
     }
@@ -157,7 +165,9 @@ def test_migration_table_columns(migrated_db):
         "ended_at",
         "recorded_at",
         "notes",
+        "source_id",
         "source_type",
+        "verification_state",
         "created_at",
         "updated_at",
     }
@@ -176,7 +186,9 @@ def test_migration_table_columns(migrated_db):
         "ended_at",
         "recorded_at",
         "notes",
+        "source_id",
         "source_type",
+        "verification_state",
         "created_at",
         "updated_at",
     }
@@ -191,7 +203,9 @@ def test_migration_table_columns(migrated_db):
         "severity",
         "recorded_at",
         "notes",
+        "source_id",
         "source_type",
+        "verification_state",
         "created_at",
         "updated_at",
     }
@@ -206,6 +220,29 @@ def test_migration_table_columns(migrated_db):
         "target_date",
         "recorded_at",
         "notes",
+        "source_id",
+        "source_type",
+        "verification_state",
+        "created_at",
+        "updated_at",
+    }
+
+    # 8. medical_documents columns
+    document_cols = {c["name"] for c in insp.get_columns("medical_documents")}
+    assert document_cols == {
+        "id",
+        "patient_id",
+        "file_name",
+        "display_name",
+        "document_type",
+        "content_type",
+        "file_size_bytes",
+        "storage_key",
+        "document_date",
+        "notes",
+        "source_type",
+        "verification_state",
+        "uploaded_at",
         "created_at",
         "updated_at",
     }
@@ -221,15 +258,16 @@ def test_foreign_key_constraints(migrated_db):
         "medications",
         "allergies",
         "patient_goals",
+        "medical_documents",
     ]
 
     for table in child_tables:
         fks = insp.get_foreign_keys(table)
-        assert len(fks) == 1, f"Table {table} must have exactly one FK"
-        fk = fks[0]
+        patient_fks = [fk for fk in fks if fk["constrained_columns"] == ["patient_id"]]
+        assert len(patient_fks) == 1, f"Table {table} must have patient_id FK"
+        fk = patient_fks[0]
         assert fk["referred_table"] == "patients"
         assert fk["referred_columns"] == ["id"]
-        assert fk["constrained_columns"] == ["patient_id"]
         assert fk["options"].get("ondelete") == "CASCADE"
 
 
@@ -247,6 +285,7 @@ def test_migration_downgrade(migrated_db):
     assert "medications" not in tables
     assert "allergies" not in tables
     assert "patient_goals" not in tables
+    assert "medical_documents" not in tables
 
 
 def test_orm_models_metadata_and_defaults():

@@ -1,10 +1,12 @@
 import React, { useEffect, useState } from 'react'
 import { useAuth } from '../context/AuthContext'
-import { conditionsApi, Condition, ConditionCreate, ConditionUpdate } from '../lib/api'
+import { conditionsApi, documentsApi, Condition, ConditionCreate, ConditionUpdate, MedicalDocument } from '../lib/api'
+import { ProvenanceBadge } from './ProvenanceBadge'
 
 export const ConditionsList: React.FC = () => {
   const { session } = useAuth()
   const [conditions, setConditions] = useState<Condition[]>([])
+  const [documents, setDocuments] = useState<MedicalDocument[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -13,6 +15,8 @@ export const ConditionsList: React.FC = () => {
   const [status, setStatus] = useState<'active' | 'resolved'>('active')
   const [isChronic, setIsChronic] = useState(false)
   const [startedAt, setStartedAt] = useState('')
+  const [sourceType, setSourceType] = useState('PATIENT_REPORTED')
+  const [sourceId, setSourceId] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
 
   // Edit state
@@ -27,9 +31,13 @@ export const ConditionsList: React.FC = () => {
 
     const fetchConditions = async () => {
       try {
-        const data = await conditionsApi.list(session.access_token)
+        const [condData, docData] = await Promise.all([
+          conditionsApi.list(session.access_token),
+          documentsApi.list(session.access_token)
+        ])
         if (mounted) {
-          setConditions(data)
+          setConditions(condData)
+          setDocuments(docData)
           setIsLoading(false)
         }
       } catch (err) {
@@ -57,6 +65,8 @@ export const ConditionsList: React.FC = () => {
         status,
         is_chronic: isChronic,
         ...(startedAt ? { started_at: startedAt } : {}),
+        source_type: sourceType,
+        source_id: sourceType === 'SOURCE_DOCUMENT' ? sourceId : null,
       }
       const newCondition = await conditionsApi.create(session.access_token, payload)
       setConditions([...conditions, newCondition])
@@ -64,6 +74,8 @@ export const ConditionsList: React.FC = () => {
       setStatus('active')
       setIsChronic(false)
       setStartedAt('')
+      setSourceType('PATIENT_REPORTED')
+      setSourceId('')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to add condition')
     } finally {
@@ -163,6 +175,38 @@ export const ConditionsList: React.FC = () => {
             Chronic
           </label>
         </div>
+        <div>
+          <label className="block text-sm">Source Type</label>
+          <select
+            data-testid="input-condition-source-type"
+            value={sourceType}
+            onChange={(e) => {
+              setSourceType(e.target.value)
+              if (e.target.value === 'PATIENT_REPORTED') setSourceId('')
+            }}
+            className="border p-2 rounded"
+          >
+            <option value="PATIENT_REPORTED">Patient Reported</option>
+            <option value="SOURCE_DOCUMENT">Source Document</option>
+          </select>
+        </div>
+        {sourceType === 'SOURCE_DOCUMENT' && (
+          <div>
+            <label className="block text-sm">Select Document</label>
+            <select
+              data-testid="input-condition-source-id"
+              value={sourceId}
+              onChange={(e) => setSourceId(e.target.value)}
+              className="border p-2 rounded"
+              required
+            >
+              <option value="">-- Choose --</option>
+              {documents.map(d => (
+                <option key={d.id} value={d.id}>{d.display_name}</option>
+              ))}
+            </select>
+          </div>
+        )}
         <button
           type="submit"
           data-testid="btn-add-condition"
@@ -223,7 +267,7 @@ export const ConditionsList: React.FC = () => {
                   </button>
                 </div>
               ) : (
-                <div className="flex gap-2 items-center">
+                <div className="flex gap-2 items-center flex-wrap">
                   <span className="font-medium">{condition.name}</span>
                   <span className="text-sm text-gray-600 bg-gray-100 px-2 py-1 rounded">
                     {condition.status}
@@ -232,6 +276,19 @@ export const ConditionsList: React.FC = () => {
                     <span className="text-sm text-yellow-600 bg-yellow-100 px-2 py-1 rounded">
                       Chronic
                     </span>
+                  )}
+                  <ProvenanceBadge
+                    sourceType={condition.source_type}
+                    verificationState={condition.verification_state}
+                  />
+                  {condition.source_id && (
+                    <button
+                      data-testid={`link-document-${condition.source_id}`}
+                      className="text-sm text-blue-600 underline"
+                      onClick={() => alert('View document ' + condition.source_id)}
+                    >
+                      View Source
+                    </button>
                   )}
                 </div>
               )}
