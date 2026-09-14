@@ -511,3 +511,37 @@ export const timelineApi = {
     request<HealthEvent[]>('GET', '/timeline', token),
 }
 
+// ─── Health Inquiry Domain Types & API ────────────────────────────────────────
+
+export interface InquiryCitation {
+  citation_id: number
+  entity_type: string
+  record_id: string
+  label: string
+  verification_state: string
+}
+
+export interface SafetyGuardrailState {
+  triggered: boolean
+  advisory_message: string | null
+}
+
+export type EvidenceStatus = 'SUFFICIENT' | 'PARTIALLY_SUFFICIENT' | 'INSUFFICIENT'
+
+export interface HealthInquiryRequest {
+  query: string
+}
+
+export interface HealthInquiryResponse {
+  query: string
+  answer: string
+  evidence_status: EvidenceStatus
+  citations: InquiryCitation[]
+  safety: SafetyGuardrailState
+  generated_at: string
+}
+
+export const healthInquiryApi = {
+  submit: (token: string, data: HealthInquiryRequest): Promise<HealthInquiryResponse> =>
+    request<HealthInquiryResponse>('POST', '/health-inquiry', token, data),
+}

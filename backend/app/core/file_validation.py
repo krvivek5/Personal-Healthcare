@@ -72,7 +72,7 @@ async def validate_upload(file: UploadFile) -> tuple[str, int]:
     # 1. Reject disallowed declared MIME type immediately (before any reads).
     if declared_ct not in ALLOWED_CONTENT_TYPES:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=(
                 f"Unsupported file type: '{declared_ct}'. "
                 f"Allowed types: {sorted(ALLOWED_CONTENT_TYPES)}"
@@ -92,7 +92,7 @@ async def validate_upload(file: UploadFile) -> tuple[str, int]:
         if first_chunk:
             if not chunk.startswith(expected_magic):
                 raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                     detail=(
                         f"File content does not match declared type '{declared_ct}'. "
                         "The file signature (magic bytes) is invalid."
@@ -114,7 +114,7 @@ async def validate_upload(file: UploadFile) -> tuple[str, int]:
     if first_chunk:
         # File was empty — no chunk was ever read.
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Uploaded file is empty.",
         )
 

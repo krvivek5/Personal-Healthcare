@@ -114,20 +114,20 @@ async def validate_and_resolve_provenance(
     if effective_source_type == HealthSourceType.PATIENT_REPORTED:
         if effective_source_id is not None:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=("source_id must be null when source_type is PATIENT_REPORTED."),
             )
     elif effective_source_type == HealthSourceType.SOURCE_DOCUMENT:
         if effective_source_id is None:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=("source_id is required when source_type is SOURCE_DOCUMENT."),
             )
     else:
         # Unknown or unsupported source_type value (schema should have caught
         # reserved types, but guard against arbitrary strings here too).
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"Unsupported source_type value: '{effective_source_type}'.",
         )
 
@@ -139,7 +139,7 @@ async def validate_and_resolve_provenance(
         if doc is None or doc.patient_id != patient_id:
             # Non-existent OR cross-patient — both deterministically 422.
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=(
                     "source_id does not reference a valid document "
                     "owned by this patient."

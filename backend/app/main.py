@@ -7,6 +7,7 @@ from app.api.conditions import router as conditions_router
 from app.api.documents import router as documents_router
 from app.api.goals import router as goals_router
 from app.api.health import router as health_router
+from app.api.health_inquiry import router as health_inquiry_router
 from app.api.health_profile import router as health_profile_router
 from app.api.medications import router as medications_router
 from app.api.symptoms import router as symptoms_router
@@ -38,6 +39,7 @@ app.include_router(medications_router, prefix=settings.API_V1_STR)
 app.include_router(symptoms_router, prefix=settings.API_V1_STR)
 app.include_router(timeline_router, prefix=settings.API_V1_STR)
 app.include_router(workspace_router, prefix=settings.API_V1_STR)
+app.include_router(health_inquiry_router, prefix=settings.API_V1_STR)
 
 
 @app.get("/")

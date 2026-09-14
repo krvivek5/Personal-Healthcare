@@ -37,7 +37,7 @@ import uuid
 
 from botocore.exceptions import ClientError  # type: ignore[import-untyped]
 from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import storage
@@ -278,6 +278,8 @@ async def patch_document(
 @router.delete(
     "/{document_id}",
     status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+    response_model=None,
 )
 async def remove_document(
     document_id: uuid.UUID,
