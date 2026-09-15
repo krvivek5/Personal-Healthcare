@@ -4,17 +4,26 @@ Document service layer for medical documents.
 Functions follow the pattern established in conditions.py.
 S3 interactions are passed in as callables so the service layer
 stays infrastructure-independent and testable.
+
+M3 Slice 3 addition:
+  persist_extraction() — create or idempotently update the one-to-one
+  DocumentExtraction record linked to a canonical MedicalDocument.
 """
 
 from __future__ import annotations
 
+import logging
 import uuid
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import MedicalDocument
+from app.db.models import DocumentExtraction, MedicalDocument
+from app.health.extraction import ExtractionResult
+
+logger = logging.getLogger(__name__)
 
 
 async def get_documents(
@@ -103,3 +112,78 @@ async def delete_document(
     """
     await db.delete(document)
     await db.commit()
+
+
+async def persist_extraction(
+    db: AsyncSession,
+    document: MedicalDocument,
+    result: ExtractionResult,
+) -> DocumentExtraction:
+    """Persist (or idempotently replace) a DocumentExtraction for *document*.
+
+    Tenant safety:
+      - patient_id is always taken from *document.patient_id*.  The caller
+        must never supply a client-provided patient_id.
+      - The composite FK on (document_id, patient_id) enforces DB-level
+        tenant integrity (established in Slice 1).
+
+    Idempotency:
+      - If a DocumentExtraction already exists for document.id, its fields
+        are updated in place rather than inserting a duplicate row.
+      - The one-to-one unique constraint on document_id guarantees that a
+        second INSERT would fail; this function prevents that by checking first.
+
+    Lifecycle:
+      - COMPLETED  → extracted_text is set; error_message is None.
+      - FAILED     → extracted_text is None; error_message is set.
+      - UNSUPPORTED→ extracted_text is None; error_message set if available.
+    """
+    extracted_at = datetime.now(timezone.utc)
+
+    # Look up any existing extraction for this document.
+    stmt = select(DocumentExtraction).where(
+        DocumentExtraction.document_id == document.id
+    )
+    row = await db.execute(stmt)
+    extraction: Optional[DocumentExtraction] = row.scalar_one_or_none()
+
+    if extraction is None:
+        extraction = DocumentExtraction(
+            document_id=document.id,
+            patient_id=document.patient_id,  # always from canonical document
+            extracted_text=result.extracted_text,
+            extraction_status=result.status,
+            extraction_method=result.extraction_method,
+            extraction_version=result.extraction_version,
+            extracted_at=extracted_at,
+            error_message=result.error_message,
+        )
+        db.add(extraction)
+    else:
+        # Update in place — do not create a second row.
+        # Use an UPDATE statement to avoid multi-field @validates conflicts
+        # when transitioning between COMPLETED and FAILED/UNSUPPORTED.
+        from sqlalchemy import update
+
+        upd_stmt = (
+            update(DocumentExtraction)
+            .where(DocumentExtraction.id == extraction.id)
+            .values(
+                extracted_text=result.extracted_text,
+                extraction_status=result.status,
+                extraction_method=result.extraction_method,
+                extraction_version=result.extraction_version,
+                extracted_at=extracted_at,
+                error_message=result.error_message,
+            )
+        )
+        await db.execute(upd_stmt)
+
+    await db.commit()
+    await db.refresh(extraction)
+    logger.info(
+        "DocumentExtraction persisted: document_id=%s status=%s",
+        document.id,
+        result.status,
+    )
+    return extraction

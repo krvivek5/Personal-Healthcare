@@ -59,6 +59,10 @@ class DocumentResponse(BaseModel):
     source_id is intentionally absent — medical_documents do not chain to
     other documents. source_type and verification_state are always
     'PATIENT_REPORTED' (enforced by DB CHECK constraints).
+
+    M3 Slice 3: extraction_status exposes the current extraction lifecycle
+    state.  Null means no extraction has been persisted for this document.
+    Internal extraction details (method, version, text) are not exposed here.
     """
 
     id: uuid.UUID
@@ -75,8 +79,32 @@ class DocumentResponse(BaseModel):
     uploaded_at: datetime
     created_at: datetime
     updated_at: datetime
+    extraction_status: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
+
+    @classmethod
+    def model_validate(cls, obj, **kwargs):  # type: ignore[override]
+        """
+        Override to populate extraction_status from the related
+        document_extraction relationship if present.
+
+        This avoids changing the ORM model or response logic in the API layer.
+        """
+        instance = super().model_validate(obj, **kwargs)
+
+        # Avoid triggering async lazy load (MissingGreenlet). Only read if loaded.
+        if hasattr(obj, "_sa_instance_state"):
+            from sqlalchemy.orm.attributes import instance_state
+
+            state = instance_state(obj)
+            if "document_extraction" in state.dict:
+                extraction = state.dict["document_extraction"]
+                if extraction is not None:
+                    instance = instance.model_copy(
+                        update={"extraction_status": extraction.extraction_status}
+                    )
+        return instance
 
 
 # ── Update schema ──────────────────────────────────────────────────────────────

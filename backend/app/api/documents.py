@@ -49,12 +49,17 @@ from app.health.documents import (
     delete_document,
     get_document_by_id,
     get_documents,
+    persist_extraction,
     update_document,
 )
+from app.health.extraction import DispatchingExtractor
 from app.health.patient import get_or_create_patient
 from app.schemas.document import DocumentResponse, DocumentType, DocumentUpdate
 
 logger = logging.getLogger(__name__)
+
+# M3 Slice 3: module-level extractor instance (pluggable via constructor).
+_extractor = DispatchingExtractor()
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
@@ -173,6 +178,27 @@ async def upload_document(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to save document metadata.",
         ) from db_exc
+
+    # 6. Extract text — best-effort: upload success is independent of extraction.
+    #    The canonical MedicalDocument is already committed.  A failure here
+    #    persists a FAILED/UNSUPPORTED extraction row; it does NOT roll back
+    #    the document or return a non-2xx to the client.
+    extraction_persisted = False
+    try:
+        extraction_result = await _extractor.extract_text(file_bytes, content_type)
+        await persist_extraction(db, doc, extraction_result)
+        extraction_persisted = True
+    except Exception as ext_exc:  # pragma: no cover — defensive belt-and-braces
+        logger.error(
+            "Extraction/persistence error for document %s: %s",
+            doc.id,
+            ext_exc,
+        )
+        # Do NOT re-raise — the document upload already succeeded.
+
+    # Refresh to load the document_extraction relationship for response serialisation.
+    if extraction_persisted:
+        await db.refresh(doc, ["document_extraction"])
 
     return DocumentResponse.model_validate(doc)
 
