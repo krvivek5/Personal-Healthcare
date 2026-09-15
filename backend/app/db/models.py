@@ -1,21 +1,24 @@
 import uuid
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Optional
+from typing import Any, Optional
 
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
     Date,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     Numeric,
     String,
     Text,
+    UniqueConstraint,
     Uuid,
     func,
 )
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
 
 from app.db.base import Base
 
@@ -558,6 +561,9 @@ class MedicalDocument(Base):
     """
 
     __tablename__ = "medical_documents"
+    __table_args__ = (
+        UniqueConstraint("id", "patient_id", name="uq_medical_documents_id_patient_id"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True),
@@ -632,8 +638,156 @@ class MedicalDocument(Base):
         nullable=False,
     )
 
-    # Relationship
+    # Relationships
     patient: Mapped["Patient"] = relationship(
         "Patient",
         back_populates="documents",
     )
+    document_extraction: Mapped[Optional["DocumentExtraction"]] = relationship(
+        "DocumentExtraction",
+        back_populates="document",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
+
+
+class DocumentExtraction(Base):
+    """Derived text content extracted from a canonical MedicalDocument."""
+
+    __tablename__ = "document_extractions"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["document_id", "patient_id"],
+            ["medical_documents.id", "medical_documents.patient_id"],
+            name="fk_document_extractions_document_patient",
+            ondelete="CASCADE",
+        ),
+        CheckConstraint(
+            "extraction_status IN ('COMPLETED', 'FAILED', 'UNSUPPORTED')",
+            name="ck_document_extractions_extraction_status",
+        ),
+        CheckConstraint(
+            "(extraction_status = 'COMPLETED' "
+            "AND extracted_text IS NOT NULL "
+            "AND length(trim(extracted_text)) > 0) "
+            "OR (extraction_status IN ('FAILED', 'UNSUPPORTED') "
+            "AND (extracted_text IS NULL OR length(trim(extracted_text)) = 0))",
+            name="ck_document_extractions_status_content",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+    document_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        unique=True,
+        nullable=False,
+        index=True,
+    )
+    patient_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("patients.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    extracted_text: Mapped[Optional[str]] = mapped_column(
+        Text,
+        nullable=True,
+    )
+    extraction_status: Mapped[str] = mapped_column(
+        String(50),
+        nullable=False,
+    )
+    extraction_method: Mapped[str] = mapped_column(
+        String(50),
+        nullable=False,
+    )
+    extraction_version: Mapped[str] = mapped_column(
+        String(50),
+        nullable=False,
+    )
+    extracted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+    error_message: Mapped[Optional[str]] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    # Relationship
+    document: Mapped["MedicalDocument"] = relationship(
+        "MedicalDocument",
+        back_populates="document_extraction",
+    )
+
+    @validates("patient_id")
+    def validate_patient_id(self, key: str, value: uuid.UUID) -> uuid.UUID:
+        if (
+            hasattr(self, "document")
+            and self.document is not None
+            and self.document.patient_id != value
+        ):
+            raise ValueError(
+                f"Tenant integrity violation: extraction patient_id ({value}) "
+                f"does not match document patient_id ({self.document.patient_id})"
+            )
+        return value
+
+    @validates("document")
+    def validate_document(
+        self, key: str, value: Optional["MedicalDocument"]
+    ) -> Optional["MedicalDocument"]:
+        if (
+            value is not None
+            and hasattr(self, "patient_id")
+            and self.patient_id is not None
+            and value.patient_id != self.patient_id
+        ):
+            raise ValueError(
+                f"Tenant integrity violation: extraction patient_id "
+                f"({self.patient_id}) does not match document patient_id "
+                f"({value.patient_id})"
+            )
+        return value
+
+    @validates("extracted_text", "extraction_status")
+    def validate_content_and_status(self, key: str, value: Any) -> Any:
+        status = (
+            value
+            if key == "extraction_status"
+            else getattr(self, "extraction_status", None)
+        )
+        text = (
+            value if key == "extracted_text" else getattr(self, "extracted_text", None)
+        )
+
+        if status == "COMPLETED":
+            if key == "extracted_text" and (value is None or not str(value).strip()):
+                raise ValueError(
+                    "COMPLETED extraction status requires non-empty extracted_text"
+                )
+            elif (
+                key == "extraction_status"
+                and text is not None
+                and not str(text).strip()
+            ):
+                raise ValueError(
+                    "COMPLETED extraction status requires non-empty extracted_text"
+                )
+        elif status in ("FAILED", "UNSUPPORTED"):
+            if key == "extracted_text" and value is not None and str(value).strip():
+                raise ValueError(
+                    f"{status} extraction status permits only null "
+                    "or empty extracted_text"
+                )
+            elif key == "extraction_status" and text is not None and str(text).strip():
+                raise ValueError(
+                    f"{status} extraction status permits only null "
+                    "or empty extracted_text"
+                )
+        return value

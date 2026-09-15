@@ -104,7 +104,7 @@ async def validate_upload(file: UploadFile) -> tuple[str, int]:
         total_bytes += len(chunk)
         if total_bytes > MAX_FILE_SIZE_BYTES:
             raise HTTPException(
-                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
                 detail=(
                     f"File exceeds the maximum allowed size of "
                     f"{MAX_FILE_SIZE_BYTES // (1024 * 1024)} MiB."

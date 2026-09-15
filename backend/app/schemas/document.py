@@ -98,3 +98,41 @@ class DocumentUpdate(BaseModel):
     def reject_provenance_fields(cls, data: dict) -> dict:
         _reject_provenance_fields(data)
         return data
+
+
+# ── Extraction schemas ─────────────────────────────────────────────────────────
+
+ExtractionStatus = Literal["COMPLETED", "FAILED", "UNSUPPORTED"]
+
+
+class DocumentExtractionResponse(BaseModel):
+    """
+    Public representation of derived text content extracted from a MedicalDocument.
+    """
+
+    id: uuid.UUID
+    document_id: uuid.UUID
+    patient_id: uuid.UUID
+    extracted_text: Optional[str] = None
+    extraction_status: ExtractionStatus
+    extraction_method: str
+    extraction_version: str
+    extracted_at: datetime
+    error_message: Optional[str] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+    @model_validator(mode="after")
+    def validate_extraction_lifecycle(self) -> DocumentExtractionResponse:
+        if self.extraction_status == "COMPLETED":
+            if self.extracted_text is None or not self.extracted_text.strip():
+                raise ValueError(
+                    "COMPLETED extraction status requires non-empty extracted_text"
+                )
+        elif self.extraction_status in ("FAILED", "UNSUPPORTED"):
+            if self.extracted_text is not None and self.extracted_text.strip():
+                raise ValueError(
+                    f"{self.extraction_status} extraction status permits "
+                    "only null or empty extracted_text"
+                )
+        return self
