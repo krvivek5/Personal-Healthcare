@@ -6,7 +6,8 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import AuthenticatedUser, get_current_user
-from app.core.llm import LLMProvider, MockLLMProvider
+from app.core.llm import LLMProvider
+from app.core.llm_gateway import get_llm_gateway
 from app.db.session import get_db
 from app.health.evidence_evaluator import evaluate_evidence
 from app.health.inquiry_context import StructuredHealthContext, build_inquiry_context
@@ -24,8 +25,8 @@ router = APIRouter(prefix="/health-inquiry", tags=["health-inquiry"])
 
 
 def get_llm_provider() -> LLMProvider:
-    """Provides the configured LLM implementation."""
-    return MockLLMProvider()
+    """Provides the configured LLM implementation via LLMGateway."""
+    return get_llm_gateway()
 
 
 def _build_record_map(

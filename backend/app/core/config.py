@@ -23,6 +23,13 @@ class Settings(BaseSettings):
     S3_SECRET_KEY: str = ""
     S3_BUCKET_NAME: str = "medical-documents"
 
+    # LLM Provider Gateway Configuration
+    LLM_PROVIDER: str = "mock"
+    LLM_MODEL: str = "gpt-4o-mini"
+    LLM_API_KEY: str = ""
+    LLM_TIMEOUT_SECONDS: float = 10.0
+    LLM_MAX_RETRIES: int = 2
+
     @property
     def supabase_issuer(self) -> str:
         base = self.SUPABASE_URL.rstrip("/")
