@@ -84,9 +84,12 @@ class SanitizedHealthContext(BaseModel):
                 v = self.profile[k]
                 lines.append(f"  {k}: {v if v is not None else 'not recorded'}")
 
-        if self.records:
+        health_records = [r for r in self.records if r.entity_type != "document"]
+        doc_records = [r for r in self.records if r.entity_type == "document"]
+
+        if health_records:
             lines.append("Patient Health Records:")
-            for r in self.records:
+            for r in health_records:
                 attr_parts = []
                 for k in sorted(r.attributes.keys()):
                     v = r.attributes[k]
@@ -95,6 +98,20 @@ class SanitizedHealthContext(BaseModel):
                 lines.append(
                     f"  {r.token} [{r.entity_type.upper()}] {', '.join(attr_parts)}"
                 )
+
+        if doc_records:
+            lines.append("=== DOCUMENT EVIDENCE ===")
+            for r in doc_records:
+                display_name = r.attributes.get("display_name") or "Document"
+                doc_date = r.attributes.get("document_date") or "not recorded"
+                doc_type = (r.attributes.get("document_type") or "DOCUMENT").upper()
+                excerpt = r.attributes.get("extracted_excerpt") or ""
+                lines.append(
+                    f"{r.token} Document: {display_name} | "
+                    f"Date: {doc_date} | Type: {doc_type}"
+                )
+                lines.append("Content:")
+                lines.append(excerpt)
 
         return "\n".join(lines)
 

@@ -77,6 +77,18 @@ def _build_record_map(
             getattr(g, "verification_state", VerificationState.UNCERTAIN),
         )
 
+    for doc in context.documents:
+        label = (
+            f"{doc.display_name} ({doc.document_date.isoformat()})"
+            if doc.document_date
+            else doc.display_name
+        )
+        record_map[doc.document_id] = (
+            "DOCUMENT",
+            label,
+            VerificationState.SOURCE_RECORDED,
+        )
+
     return record_map
 
 
