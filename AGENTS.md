@@ -11,7 +11,7 @@ docs/SPEC.md     → Product intent
 docs/DESIGN.md   → System design
 docs/ROADMAP.md  → Product phases
 phases/phase-XX.md → Current implementation scope
-docs/AGENTS.md   → Rules for working on the project
+AGENTS.md   → Rules for working on the project
 ```
 
 When documents conflict, higher-level product intent takes precedence.
