@@ -317,9 +317,8 @@ async def test_medical_documents_not_loaded(db):
 
     ctx = await build_inquiry_context(db, patient_id)
 
-    # Context does not expose documents
-    assert not hasattr(ctx, "documents")
-    assert not hasattr(ctx, "medical_documents")
+    # Context exposes documents (M3 Slice 5), but not loaded by build_inquiry_context
+    assert ctx.documents == []
 
     # The timeline might expose a DOCUMENT_UPLOADED event but NO content
     # Let's ensure the event doesn't leak content

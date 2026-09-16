@@ -1,4 +1,5 @@
 import uuid
+from datetime import date
 from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -20,12 +21,26 @@ from app.schemas.symptom import SymptomResponse
 from app.schemas.timeline import HealthEvent
 
 
+class DocumentEvidenceContext(BaseModel):
+    """
+    Lightweight, non-ORM representation of selected document evidence.
+    Used for safe serialization into the inquiry context.
+    """
+
+    document_id: uuid.UUID
+    display_name: str
+    document_type: str
+    document_date: Optional[date] = None
+    extracted_excerpt: str
+
+
 class StructuredHealthContext(BaseModel):
     """
     Canonical in-memory context representation required by M1.
     Contains only the authenticated patient's records with fields required by M1 design,
     including record IDs and data-faithful temporal representations.
     It contains no LLM-generated information or MedicalDocument file contents.
+    (M3 extension: optionally contains deterministically selected document excerpts)
     """
 
     profile: Optional[HealthProfileResponse] = None
@@ -35,6 +50,7 @@ class StructuredHealthContext(BaseModel):
     symptoms: list[SymptomResponse] = Field(default_factory=list)
     goals: list[GoalResponse] = Field(default_factory=list)
     recent_timeline_events: list[HealthEvent] = Field(default_factory=list)
+    documents: list[DocumentEvidenceContext] = Field(default_factory=list)
 
     model_config = ConfigDict(from_attributes=True)
 

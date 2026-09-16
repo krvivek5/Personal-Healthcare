@@ -378,6 +378,42 @@ def build_sanitized_context(
                 )
                 counter += 1
 
+    # 9. Document Evidence Sanitization (M3 Slice 5)
+    # A conservative character approximation for ~1500 tokens.
+    MAX_DOCUMENT_EXCERPT_CHARS = 6000
+
+    doc_counter = 1
+    if context.documents:
+        # We sort deterministically by document_id hex string to ensure
+        # stable numbering, but they are already ordered correctly by
+        # document_selection. We should respect the ordered selection but
+        # ensure we assign tokens deterministically in that order.
+        for doc in context.documents:
+            token = f"[DOC-{doc_counter}]"
+            token_clean = f"DOC-{doc_counter}"
+            reference_map[token] = doc.document_id
+            reference_map[token_clean] = doc.document_id
+
+            # Budgeting Strategy: Enforce deterministic hard character cap
+            excerpt = doc.extracted_excerpt
+            if excerpt and len(excerpt) > MAX_DOCUMENT_EXCERPT_CHARS:
+                excerpt = excerpt[:MAX_DOCUMENT_EXCERPT_CHARS]
+
+            attrs = {
+                "display_name": doc.display_name,
+                "document_type": doc.document_type,
+                "document_date": _format_value(doc.document_date),
+                "extracted_excerpt": excerpt,
+            }
+            records.append(
+                SanitizedRecord(
+                    token=token,
+                    entity_type="document",
+                    attributes=attrs,
+                )
+            )
+            doc_counter += 1
+
     return SanitizedHealthContext(
         profile=sanitized_profile,
         records=records,
