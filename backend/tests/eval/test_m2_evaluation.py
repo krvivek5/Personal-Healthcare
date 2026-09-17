@@ -18,14 +18,17 @@ Invariants evaluated:
 """
 
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 import pytest
 
 from app.core.llm import MockLLMProvider, SynthesisResult
 from app.core.llm_gateway import LLMGateway
 from app.health.evidence_evaluator import EvidenceResult
-from app.health.inquiry_context import StructuredHealthContext
+from app.health.inquiry_context import (
+    DocumentEvidenceContext,
+    StructuredHealthContext,
+)
 from app.health.safety_guardrails import SAFETY_ADVISORY, evaluate_safety
 from app.schemas.condition import ConditionResponse
 from app.schemas.inquiry import (
@@ -520,3 +523,186 @@ class TestTenantIsolation:
 
         # User B's record ID must never appear in citations
         assert user_b_condition.id not in result.cited_record_ids
+
+
+# ---------------------------------------------------------------------------
+# 8. Document Grounding & Content Invariants (M3 Slice 7)
+# ---------------------------------------------------------------------------
+
+
+class TestDocumentGrounding:
+    @pytest.mark.asyncio
+    async def test_document_grounding_synthesizes_answer_with_citation(
+        self, gateway_mock: LLMGateway
+    ):
+        """
+        Grounded document context synthesizes an answer citing the document ID.
+        """
+        doc_id = uuid.uuid4()
+        doc_context = DocumentEvidenceContext(
+            document_id=doc_id,
+            display_name="Comprehensive Metabolic Panel",
+            document_type="lab_report",
+            document_date=date(2026, 8, 12),
+            extracted_excerpt="Creatinine: 0.9 mg/dL (ref 0.6-1.2 mg/dL).",
+        )
+        context = StructuredHealthContext(
+            profile=None,
+            conditions=[],
+            medications=[],
+            allergies=[],
+            symptoms=[],
+            goals=[],
+            recent_timeline_events=[],
+            documents=[doc_context],
+        )
+        target = InquiryTarget(target_domain="labs", target_entity="creatinine")
+        evidence = EvidenceResult(
+            status=EvidenceStatus.SUFFICIENT,
+            temporal_interpretation="all",
+            evidence_directive="Relevant content was found in the uploaded document.",
+        )
+
+        result = await gateway_mock.synthesize_response(
+            query="What was my creatinine?",
+            target=target,
+            context=context,
+            evidence=evidence,
+            safety_state=_no_safety(),
+        )
+
+        assert isinstance(result, SynthesisResult)
+        assert "Comprehensive Metabolic Panel" in result.answer_text
+        assert "creatinine" in result.answer_text.lower()
+        assert doc_id in result.cited_record_ids
+
+    @pytest.mark.asyncio
+    async def test_document_absence_honesty_synthesizes_missing_directive(
+        self, gateway_mock: LLMGateway
+    ):
+        """
+        When document evidence is INSUFFICIENT, the answer reports absence
+        without diagnostic hallucination, and emits 0 citations.
+        """
+        doc_id = uuid.uuid4()
+        doc_context = DocumentEvidenceContext(
+            document_id=doc_id,
+            display_name="Comprehensive Metabolic Panel",
+            document_type="lab_report",
+            document_date=date(2026, 8, 12),
+            extracted_excerpt="Creatinine: 0.9 mg/dL.",
+        )
+        context = StructuredHealthContext(
+            profile=None,
+            conditions=[],
+            medications=[],
+            allergies=[],
+            symptoms=[],
+            goals=[],
+            recent_timeline_events=[],
+            documents=[doc_context],
+        )
+        target = InquiryTarget(target_domain="labs", target_entity="cholesterol")
+        evidence = EvidenceResult(
+            status=EvidenceStatus.INSUFFICIENT,
+            evidence_directive=(
+                "The uploaded document does not contain a record of: cholesterol."
+            ),
+        )
+
+        result = await gateway_mock.synthesize_response(
+            query="What was my cholesterol?",
+            target=target,
+            context=context,
+            evidence=evidence,
+            safety_state=_no_safety(),
+        )
+
+        assert "does not contain a record of: cholesterol" in result.answer_text
+        assert len(result.cited_record_ids) == 0
+
+    @pytest.mark.asyncio
+    async def test_document_citation_integrity_reconciles_canonical_uuid(
+        self, gateway_mock: LLMGateway
+    ):
+        """
+        Reconciled citations map 100% to verified canonical document UUIDs.
+        """
+        doc_id = uuid.uuid4()
+        doc_context = DocumentEvidenceContext(
+            document_id=doc_id,
+            display_name="CBC Report",
+            document_type="lab_report",
+            document_date=date(2026, 8, 12),
+            extracted_excerpt="Hemoglobin: 14.2 g/dL.",
+        )
+        context = StructuredHealthContext(
+            profile=None,
+            conditions=[],
+            medications=[],
+            allergies=[],
+            symptoms=[],
+            goals=[],
+            recent_timeline_events=[],
+            documents=[doc_context],
+        )
+        target = InquiryTarget(target_domain="labs", target_entity="hemoglobin")
+        evidence = EvidenceResult(
+            status=EvidenceStatus.SUFFICIENT,
+            evidence_directive="Relevant content was found in the uploaded document.",
+        )
+
+        result = await gateway_mock.synthesize_response(
+            query="What was my hemoglobin?",
+            target=target,
+            context=context,
+            evidence=evidence,
+            safety_state=_no_safety(),
+        )
+
+        assert len(result.cited_record_ids) == 1
+        assert result.cited_record_ids[0] == doc_id
+
+    @pytest.mark.asyncio
+    async def test_document_safety_preflight_precedence(self, gateway_mock: LLMGateway):
+        """
+        Acute emergency queries bypass synthesis even when document context is attached.
+        """
+        doc_id = uuid.uuid4()
+        doc_context = DocumentEvidenceContext(
+            document_id=doc_id,
+            display_name="Lab Report",
+            document_type="lab_report",
+            document_date=date(2026, 8, 12),
+            extracted_excerpt="Troponin: 0.01 ng/mL.",
+        )
+        context = StructuredHealthContext(
+            profile=None,
+            conditions=[],
+            medications=[],
+            allergies=[],
+            symptoms=[],
+            goals=[],
+            recent_timeline_events=[],
+            documents=[doc_context],
+        )
+        target = InquiryTarget(target_domain="labs", target_entity="troponin")
+        evidence = EvidenceResult(
+            status=EvidenceStatus.SUFFICIENT,
+            evidence_directive="Relevant content was found in the uploaded document.",
+        )
+
+        query = "I have severe crushing chest pain, what does my lab report say?"
+        safety_state = evaluate_safety(query)
+        assert safety_state.triggered
+
+        result = await gateway_mock.synthesize_response(
+            query=query,
+            target=target,
+            context=context,
+            evidence=evidence,
+            safety_state=safety_state,
+        )
+
+        assert result.answer_text == SAFETY_ADVISORY
+        assert len(result.cited_record_ids) == 0

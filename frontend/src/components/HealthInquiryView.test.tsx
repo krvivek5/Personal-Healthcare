@@ -1,8 +1,8 @@
 import React from 'react'
-import { render, screen, waitFor, fireEvent } from '@testing-library/react'
+import { render, screen, waitFor, fireEvent, act } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { useAuth } from '../context/AuthContext'
-import { healthInquiryApi, ApiError, HealthInquiryResponse } from '../lib/api'
+import { healthInquiryApi, documentsApi, ApiError, HealthInquiryResponse } from '../lib/api'
 import { HealthInquiryView } from './HealthInquiryView'
 
 // Mock AuthContext
@@ -14,6 +14,9 @@ vi.mock('../context/AuthContext', () => ({
 vi.mock('../lib/api', () => ({
   healthInquiryApi: {
     submit: vi.fn(),
+  },
+  documentsApi: {
+    download: vi.fn(),
   },
   ApiError: class extends Error {
     constructor(public status: number, message: string) {
@@ -249,5 +252,225 @@ describe('HealthInquiryView', () => {
       expect(screen.getByTestId('inquiry-error')).toBeInTheDocument()
     })
     expect(screen.getByTestId('inquiry-error')).toHaveTextContent('An unexpected error occurred while processing your inquiry.')
+  })
+
+  it('renders document citation cards with badges, metadata, and actions', async () => {
+    vi.mocked(healthInquiryApi.submit).mockResolvedValueOnce({
+      query: 'What was my creatinine?',
+      answer: 'According to your uploaded Comprehensive Metabolic Panel, records confirm creatinine.',
+      evidence_status: 'SUFFICIENT',
+      citations: [
+        {
+          citation_id: 1,
+          entity_type: 'DOCUMENT',
+          record_id: 'doc-uuid-1',
+          label: 'Comprehensive Metabolic Panel (2026-08-12)',
+          verification_state: 'SOURCE_RECORDED'
+        }
+      ],
+      safety: { triggered: false, advisory_message: null },
+      generated_at: '2026-09-16T12:00:00Z'
+    })
+
+    render(<HealthInquiryView />)
+    fireEvent.change(screen.getByTestId('inquiry-query-input'), { target: { value: 'What was my creatinine?' } })
+    fireEvent.click(screen.getByTestId('inquiry-submit-btn'))
+
+    await waitFor(() => {
+      expect(screen.getByTestId('document-citation-card-1')).toBeInTheDocument()
+    })
+
+    expect(screen.getByTestId('citation-token-1')).toHaveTextContent('[1]')
+    expect(screen.getByTestId('citation-type-1')).toHaveTextContent('DOCUMENT')
+    expect(screen.getByTestId('citation-state-1')).toHaveTextContent('SOURCE RECORDED')
+    expect(screen.getByText('Comprehensive Metabolic Panel (2026-08-12)')).toBeInTheDocument()
+    expect(screen.getByTestId('inspect-details-btn-1')).toHaveTextContent('Inspect Details')
+    expect(screen.getByTestId('download-doc-btn-1')).toHaveTextContent('Download Document')
+    expect(screen.queryByTestId('citation-details-1')).not.toBeInTheDocument()
+  })
+
+  it('toggles inline details panel when inspect details button is clicked', async () => {
+    vi.mocked(healthInquiryApi.submit).mockResolvedValueOnce({
+      query: 'What was my creatinine?',
+      answer: 'According to your records, creatinine was normal.',
+      evidence_status: 'SUFFICIENT',
+      citations: [
+        {
+          citation_id: 1,
+          entity_type: 'DOCUMENT',
+          record_id: 'doc-uuid-1',
+          label: 'Lab Report (2026-08-12)',
+          verification_state: 'SOURCE_RECORDED'
+        }
+      ],
+      safety: { triggered: false, advisory_message: null },
+      generated_at: '2026-09-16T12:00:00Z'
+    })
+
+    render(<HealthInquiryView />)
+    fireEvent.change(screen.getByTestId('inquiry-query-input'), { target: { value: 'What was my creatinine?' } })
+    fireEvent.click(screen.getByTestId('inquiry-submit-btn'))
+
+    await waitFor(() => {
+      expect(screen.getByTestId('inspect-details-btn-1')).toBeInTheDocument()
+    })
+
+    const inspectBtn = screen.getByTestId('inspect-details-btn-1')
+    fireEvent.click(inspectBtn)
+
+    expect(screen.getByTestId('citation-details-1')).toBeInTheDocument()
+    expect(screen.getByText('doc-uuid-1')).toBeInTheDocument()
+    expect(inspectBtn).toHaveTextContent('Hide Details')
+
+    fireEvent.click(inspectBtn)
+    expect(screen.queryByTestId('citation-details-1')).not.toBeInTheDocument()
+    expect(inspectBtn).toHaveTextContent('Inspect Details')
+  })
+
+  it('triggers document download when download button is clicked', async () => {
+    vi.mocked(healthInquiryApi.submit).mockResolvedValueOnce({
+      query: 'What was my creatinine?',
+      answer: 'According to your records, creatinine was normal.',
+      evidence_status: 'SUFFICIENT',
+      citations: [
+        {
+          citation_id: 1,
+          entity_type: 'DOCUMENT',
+          record_id: 'doc-uuid-1',
+          label: 'Lab Report (2026-08-12)',
+          verification_state: 'SOURCE_RECORDED'
+        }
+      ],
+      safety: { triggered: false, advisory_message: null },
+      generated_at: '2026-09-16T12:00:00Z'
+    })
+
+    vi.mocked(documentsApi.download).mockResolvedValueOnce(new Blob(['PDF content']))
+
+    const createObjectURL = vi.fn().mockReturnValue('blob:http://fake')
+    const revokeObjectURL = vi.fn()
+    vi.stubGlobal('URL', { createObjectURL, revokeObjectURL })
+
+    const originalClick = HTMLAnchorElement.prototype.click
+    const mockAnchorClick = vi.fn()
+    HTMLAnchorElement.prototype.click = mockAnchorClick
+
+    render(<HealthInquiryView />)
+    fireEvent.change(screen.getByTestId('inquiry-query-input'), { target: { value: 'What was my creatinine?' } })
+    fireEvent.click(screen.getByTestId('inquiry-submit-btn'))
+
+    await waitFor(() => {
+      expect(screen.getByTestId('download-doc-btn-1')).toBeInTheDocument()
+    })
+
+    const downloadBtn = screen.getByTestId('download-doc-btn-1')
+    fireEvent.click(downloadBtn)
+
+    await waitFor(() => {
+      expect(documentsApi.download).toHaveBeenCalledWith(mockToken, 'doc-uuid-1')
+    })
+    expect(mockAnchorClick).toHaveBeenCalled()
+
+    HTMLAnchorElement.prototype.click = originalClick
+  })
+
+  it('displays download error when document download fails', async () => {
+    vi.mocked(healthInquiryApi.submit).mockResolvedValueOnce({
+      query: 'What was my creatinine?',
+      answer: 'According to your records, creatinine was normal.',
+      evidence_status: 'SUFFICIENT',
+      citations: [
+        {
+          citation_id: 1,
+          entity_type: 'DOCUMENT',
+          record_id: 'doc-uuid-1',
+          label: 'Lab Report (2026-08-12)',
+          verification_state: 'SOURCE_RECORDED'
+        }
+      ],
+      safety: { triggered: false, advisory_message: null },
+      generated_at: '2026-09-16T12:00:00Z'
+    })
+
+    vi.mocked(documentsApi.download).mockRejectedValueOnce(new Error('Network error downloading file'))
+
+    render(<HealthInquiryView />)
+    fireEvent.change(screen.getByTestId('inquiry-query-input'), { target: { value: 'What was my creatinine?' } })
+    fireEvent.click(screen.getByTestId('inquiry-submit-btn'))
+
+    await waitFor(() => {
+      expect(screen.getByTestId('download-doc-btn-1')).toBeInTheDocument()
+    })
+
+    fireEvent.click(screen.getByTestId('download-doc-btn-1'))
+
+    await waitFor(() => {
+      expect(screen.getByTestId('download-error-1')).toBeInTheDocument()
+    })
+    expect(screen.getByTestId('download-error-1')).toHaveTextContent('Network error downloading file')
+  })
+
+  it('displays downloading state and disables download button while download is pending', async () => {
+    vi.mocked(healthInquiryApi.submit).mockResolvedValueOnce({
+      query: 'What was my creatinine?',
+      answer: 'According to your records, creatinine was normal.',
+      evidence_status: 'SUFFICIENT',
+      citations: [
+        {
+          citation_id: 1,
+          entity_type: 'DOCUMENT',
+          record_id: 'doc-uuid-1',
+          label: 'Lab Report (2026-08-12)',
+          verification_state: 'SOURCE_RECORDED'
+        }
+      ],
+      safety: { triggered: false, advisory_message: null },
+      generated_at: '2026-09-16T12:00:00Z'
+    })
+
+    let resolveDownload!: (value: Blob) => void
+    const pendingPromise = new Promise<Blob>((resolve) => {
+      resolveDownload = resolve
+    })
+    vi.mocked(documentsApi.download).mockReturnValueOnce(pendingPromise)
+
+    const createObjectURL = vi.fn().mockReturnValue('blob:http://fake')
+    const revokeObjectURL = vi.fn()
+    vi.stubGlobal('URL', { createObjectURL, revokeObjectURL })
+
+    const originalClick = HTMLAnchorElement.prototype.click
+    const mockAnchorClick = vi.fn()
+    HTMLAnchorElement.prototype.click = mockAnchorClick
+
+    render(<HealthInquiryView />)
+    fireEvent.change(screen.getByTestId('inquiry-query-input'), { target: { value: 'What was my creatinine?' } })
+    fireEvent.click(screen.getByTestId('inquiry-submit-btn'))
+
+    await waitFor(() => {
+      expect(screen.getByTestId('download-doc-btn-1')).toBeInTheDocument()
+    })
+
+    const downloadBtn = screen.getByTestId('download-doc-btn-1')
+    expect(downloadBtn).toHaveTextContent('Download Document')
+    expect(downloadBtn).not.toBeDisabled()
+
+    fireEvent.click(downloadBtn)
+
+    await waitFor(() => {
+      expect(downloadBtn).toHaveTextContent('Downloading...')
+    })
+    expect(downloadBtn).toBeDisabled()
+
+    await act(async () => {
+      resolveDownload(new Blob(['PDF content']))
+    })
+
+    await waitFor(() => {
+      expect(downloadBtn).toHaveTextContent('Download Document')
+    })
+    expect(downloadBtn).not.toBeDisabled()
+    expect(mockAnchorClick).toHaveBeenCalled()
+
+    HTMLAnchorElement.prototype.click = originalClick
   })
 })
