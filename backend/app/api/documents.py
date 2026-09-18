@@ -44,6 +44,7 @@ from app.core import storage
 from app.core.auth import AuthenticatedUser, get_current_user
 from app.core.file_validation import validate_upload
 from app.db.session import get_db
+from app.health.chunking import chunk_and_persist_document
 from app.health.documents import (
     create_document,
     delete_document,
@@ -186,8 +187,21 @@ async def upload_document(
     extraction_persisted = False
     try:
         extraction_result = await _extractor.extract_text(file_bytes, content_type)
-        await persist_extraction(db, doc, extraction_result)
+        extraction = await persist_extraction(db, doc, extraction_result)
         extraction_persisted = True
+
+        # 7. Chunk document — derived data pipeline (non-fatal to upload)
+        if extraction.extraction_status == "COMPLETED":
+            try:
+                await chunk_and_persist_document(db, doc, extraction)
+                await db.commit()
+            except Exception as chunk_exc:
+                logger.error(
+                    "Chunking failure for document %s: %s",
+                    doc.id,
+                    chunk_exc,
+                )
+                await db.rollback()
     except Exception as ext_exc:  # pragma: no cover — defensive belt-and-braces
         logger.error(
             "Extraction/persistence error for document %s: %s",

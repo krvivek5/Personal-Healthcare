@@ -276,12 +276,14 @@ class PyPDFExtractor:
         """
         from pypdf import PdfReader  # local import to defer until needed
 
+        from app.health.chunking import PAGE_DELIMITER
+
         reader = PdfReader(io.BytesIO(file_bytes))
         parts: list[str] = []
         for page in reader.pages:
             page_text = page.extract_text() or ""
             parts.append(page_text)
-        return "\n".join(parts)
+        return PAGE_DELIMITER.join(parts)
 
 
 # ---------------------------------------------------------------------------
