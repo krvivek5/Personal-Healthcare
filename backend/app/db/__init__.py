@@ -8,6 +8,7 @@ from app.db.base import (
 from app.db.models import (
     Allergy,
     Condition,
+    DocumentChunk,
     DocumentExtraction,
     HealthProfile,
     MedicalDocument,
@@ -32,5 +33,5 @@ __all__ = [
     "PatientGoal",
     "MedicalDocument",
     "DocumentExtraction",
+    "DocumentChunk",
 ]
-

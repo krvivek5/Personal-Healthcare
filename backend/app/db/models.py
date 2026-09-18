@@ -3,6 +3,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Optional
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     BigInteger,
     Boolean,
@@ -11,6 +12,8 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     ForeignKeyConstraint,
+    Index,
+    Integer,
     Numeric,
     String,
     Text,
@@ -18,9 +21,20 @@ from sqlalchemy import (
     Uuid,
     func,
 )
+from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
 
 from app.db.base import Base
+
+
+# ---------------------------------------------------------------------------
+# SQLite dialect fallback for pgvector Vector type.
+# This allows SQLite-based offline test suites to load models without errors.
+# The Vector(768) column is stored as TEXT in SQLite.
+# ---------------------------------------------------------------------------
+@compiles(Vector, "sqlite")
+def _visit_vector_sqlite(type_: Vector, compiler: object, **kw: object) -> str:  # type: ignore[override]
+    return "TEXT"
 
 
 class Patient(Base):
@@ -649,6 +663,11 @@ class MedicalDocument(Base):
         uselist=False,
         cascade="all, delete-orphan",
     )
+    chunks: Mapped[list["DocumentChunk"]] = relationship(
+        "DocumentChunk",
+        back_populates="document",
+        cascade="all, delete-orphan",
+    )
 
 
 class DocumentExtraction(Base):
@@ -791,3 +810,89 @@ class DocumentExtraction(Base):
                     "or empty extracted_text"
                 )
         return value
+
+
+class DocumentChunk(Base):
+    """Derived text chunk from a canonical MedicalDocument, with optional vector
+    embedding.
+
+    Each chunk belongs to exactly one (document_id, patient_id) pair, enforced by
+    the composite FK to medical_documents. The embedding column holds a 768-dimensional
+    pgvector embedding on PostgreSQL; on SQLite it is stored as TEXT for testing.
+
+    Lifecycle invariants (see S1 plan §6):
+      - Chunks are derived data; medical_documents remains the canonical authority.
+      - chunk_index uniqueness within a document prevents duplicate passages.
+      - Non-empty chunk_text is enforced at the DB level.
+    """
+
+    __tablename__ = "document_chunks"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["document_id", "patient_id"],
+            ["medical_documents.id", "medical_documents.patient_id"],
+            name="fk_document_chunks_document_patient",
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint(
+            "document_id",
+            "chunk_index",
+            name="uq_document_chunks_document_chunk_index",
+        ),
+        CheckConstraint(
+            "length(trim(chunk_text)) > 0",
+            name="ck_document_chunks_non_empty_text",
+        ),
+        Index("ix_document_chunks_patient_document", "patient_id", "document_id"),
+        # HNSW cosine vector index — PostgreSQL only; ignored silently on SQLite
+        # because postgresql_using/postgresql_ops kwargs are no-ops for other dialects.
+        Index(
+            "ix_document_chunks_embedding_hnsw",
+            "embedding",
+            postgresql_using="hnsw",
+            postgresql_ops={"embedding": "vector_cosine_ops"},
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+    document_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        nullable=False,
+        index=True,
+    )
+    patient_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        nullable=False,
+        index=True,
+    )
+    chunk_index: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+    )
+    page_number: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        nullable=True,
+    )
+    chunk_text: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+    )
+    embedding: Mapped[Optional[list[float]]] = mapped_column(
+        Vector(768),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+    # Relationships
+    document: Mapped["MedicalDocument"] = relationship(
+        "MedicalDocument",
+        back_populates="chunks",
+    )

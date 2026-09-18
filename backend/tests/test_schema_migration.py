@@ -13,6 +13,7 @@ from alembic import command
 from app.db import (
     Allergy,
     Condition,
+    DocumentChunk,
     HealthProfile,
     Medication,
     Patient,
@@ -27,7 +28,11 @@ def migrated_db():
     fd, db_path = tempfile.mkstemp(suffix=".db")
     os.close(fd)
 
-    cfg = Config("alembic.ini")
+    import pathlib
+
+    backend_dir = pathlib.Path(__file__).parent.parent
+    cfg = Config(str(backend_dir / "alembic.ini"))
+    cfg.set_main_option("script_location", str(backend_dir / "alembic"))
     cfg.set_main_option("sqlalchemy.url", f"sqlite:///{db_path}")
 
     # Apply migration
@@ -51,7 +56,11 @@ def migrated_db():
 
 def test_alembic_offline_sql_generation_postgresql(capsys):
     """Verify Alembic compiles valid PostgreSQL DDL with types and constraints."""
-    cfg = Config("alembic.ini")
+    import pathlib
+
+    backend_dir = pathlib.Path(__file__).parent.parent
+    cfg = Config(str(backend_dir / "alembic.ini"))
+    cfg.set_main_option("script_location", str(backend_dir / "alembic"))
     command.upgrade(cfg, "head", sql=True)
     captured = capsys.readouterr()
     sql_output = captured.out
@@ -66,6 +75,8 @@ def test_alembic_offline_sql_generation_postgresql(capsys):
         "CREATE TABLE allergies",
         "CREATE TABLE patient_goals",
         "CREATE TABLE medical_documents",
+        "CREATE TABLE document_extractions",
+        "CREATE TABLE document_chunks",
     ]
     for table_ddl in expected_tables:
         assert table_ddl in sql_output, f"Missing {table_ddl} in generated SQL"
@@ -107,6 +118,8 @@ def test_migration_creates_expected_tables(migrated_db):
         "allergies",
         "patient_goals",
         "medical_documents",
+        "document_extractions",
+        "document_chunks",
     }
     assert expected_tables.issubset(tables)
 
@@ -247,6 +260,20 @@ def test_migration_table_columns(migrated_db):
         "updated_at",
     }
 
+    # 9. document_extractions columns (M3 restoration)
+    extraction_cols = {c["name"] for c in insp.get_columns("document_extractions")}
+    assert extraction_cols == {
+        "id",
+        "document_id",
+        "patient_id",
+        "extracted_text",
+        "extraction_status",
+        "extraction_method",
+        "extraction_version",
+        "extracted_at",
+        "error_message",
+    }
+
 
 def test_foreign_key_constraints(migrated_db):
     """Verify all child tables have FK referencing patients.id with CASCADE delete."""
@@ -286,6 +313,8 @@ def test_migration_downgrade(migrated_db):
     assert "allergies" not in tables
     assert "patient_goals" not in tables
     assert "medical_documents" not in tables
+    assert "document_extractions" not in tables
+    assert "document_chunks" not in tables
 
 
 def test_orm_models_metadata_and_defaults():
@@ -328,6 +357,13 @@ def test_orm_models_metadata_and_defaults():
     assert Patient.medications.property.uselist is True
     assert Patient.allergies.property.uselist is True
     assert Patient.goals.property.uselist is True
+
+    # Check DocumentChunk model
+    assert DocumentChunk.__tablename__ == "document_chunks"
+    assert DocumentChunk.chunk_index.property.columns[0].nullable is False
+    assert DocumentChunk.chunk_text.property.columns[0].nullable is False
+    assert DocumentChunk.embedding.property.columns[0].nullable is True
+    assert DocumentChunk.page_number.property.columns[0].nullable is True
 
 
 def test_unique_user_id_constraint(migrated_db):
