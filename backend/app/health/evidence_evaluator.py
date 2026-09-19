@@ -1,3 +1,4 @@
+import logging
 import re
 import uuid
 from dataclasses import dataclass
@@ -7,7 +8,10 @@ from typing import Any, Optional
 from pydantic import BaseModel
 
 from app.health.inquiry_context import StructuredHealthContext
+from app.health.retrieval import RetrievalResult
 from app.schemas.inquiry import EvidenceStatus, InquiryTarget
+
+logger = logging.getLogger(__name__)
 
 
 class EvidenceResult(BaseModel):
@@ -356,4 +360,204 @@ def _absent_directive(terms: list[str], document_date: Optional[date]) -> str:
     term_list = ", ".join(terms)
     return (
         f"The uploaded document{date_part} does not contain a record of: {term_list}."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Passage-level evidence evaluation (M4 Slice 5)
+# ---------------------------------------------------------------------------
+
+
+def _absent_records_directive(terms: list[str]) -> str:
+    """Produce a safe corpus-level absence directive for passage evidence.
+
+    Used by ``evaluate_passage_evidence`` when queried facts are not found
+    across all retrieved passages.  States that the patient's uploaded records
+    were searched without a match — categorically different from asserting
+    that the patient lacks the clinical fact.
+
+    Unlike the M3 ``_absent_directive`` (scoped to a single named document),
+    this function describes a corpus-level absence across all retrieved passages
+    without referencing a specific document date.
+    """
+    term_list = ", ".join(terms)
+    return (
+        f"Your uploaded records were searched, but do not contain "
+        f"a record of: {term_list}."
+    )
+
+
+def evaluate_passage_evidence(
+    target: InquiryTarget,
+    retrieval_result: RetrievalResult,
+    requesting_patient_id: uuid.UUID,
+) -> EvidenceResult:
+    """Evaluate passage-level evidence against an InquiryTarget.
+
+    This is the M4 S5 counterpart to ``evaluate_document_evidence`` (M3).
+    It inspects whether candidate passages retrieved by
+    ``HybridRetrievalEngine`` corroborate the clinical entities and
+    attributes requested by the patient.
+
+    Tenant isolation
+    ----------------
+    ``requesting_patient_id`` is verified against both
+    ``retrieval_result.patient_id`` and every individual
+    ``RetrievedPassage.patient_id``.  Any mismatch returns INSUFFICIENT
+    without exposing content — the directive does NOT reveal whether
+    foreign records exist.
+
+    Evidence scoring
+    ----------------
+    Rule A — ``requested_attributes`` non-empty:
+        Attributes are pooled across all candidate passages via whole-word
+        boundary matching (``_keyword_present``).
+
+        - SUFFICIENT: every requested attribute corroborated.
+        - PARTIALLY_SUFFICIENT: some corroborated, some missing.
+        - INSUFFICIENT: zero attributes corroborated.
+
+    Rule B — ``target_entity`` only, no ``requested_attributes``:
+        The topical entity is searched across all passages.
+
+        - SUFFICIENT: entity found in at least one passage.
+        - INSUFFICIENT: entity absent from all passages.
+
+    Rule C — generic domain query, neither entity nor attributes:
+        - SUFFICIENT if any passages were retrieved.
+        - INSUFFICIENT if no passages exist.
+
+    No semantic distance threshold is applied.  Qualification is determined
+    exclusively by clinical entity and attribute keyword corroboration.
+
+    Missing-fields ordering
+    -----------------------
+    ``missing_fields`` preserves the exact ordering of
+    ``target.requested_attributes`` — not alphabetical or match order.
+    """
+    # ------------------------------------------------------------------
+    # 1. Tenant integrity gate — fail-closed on mismatch.
+    # ------------------------------------------------------------------
+    if retrieval_result.patient_id != requesting_patient_id:
+        logger.warning(
+            "Tenant mismatch in evaluate_passage_evidence: "
+            "retrieval_result.patient_id != requesting_patient_id"
+        )
+        return EvidenceResult(
+            status=EvidenceStatus.INSUFFICIENT,
+            evidence_directive=(
+                "Your uploaded records were searched, but do not contain "
+                "a record of the requested information."
+            ),
+        )
+
+    for p in retrieval_result.passages:
+        if p.patient_id != requesting_patient_id:
+            logger.warning(
+                "Tenant mismatch on passage chunk_id=%s",
+                str(p.chunk_id),
+            )
+            return EvidenceResult(
+                status=EvidenceStatus.INSUFFICIENT,
+                evidence_directive=(
+                    "Your uploaded records were searched, but do not contain "
+                    "a record of the requested information."
+                ),
+            )
+
+    # ------------------------------------------------------------------
+    # 2. Empty retrieval result gate.
+    # ------------------------------------------------------------------
+    if retrieval_result.is_empty:
+        if target.requested_attributes:
+            missing = list(target.requested_attributes)
+            directive = _absent_records_directive(missing)
+        elif target.target_entity:
+            directive = _absent_records_directive([target.target_entity])
+        else:
+            directive = "No document records are available for this domain."
+        return EvidenceResult(
+            status=EvidenceStatus.INSUFFICIENT,
+            missing_fields=list(target.requested_attributes)
+            if target.requested_attributes
+            else [],
+            evidence_directive=directive,
+        )
+
+    # ------------------------------------------------------------------
+    # Rule A: requested_attributes non-empty — pool across all passages.
+    # ------------------------------------------------------------------
+    if target.requested_attributes:
+        matched_fields: set[str] = set()
+
+        for p in retrieval_result.passages:
+            for attr in target.requested_attributes:
+                if _keyword_present(attr.lower(), p.chunk_text.lower()):
+                    matched_fields.add(attr)
+
+        # Deterministic ordering: preserve target.requested_attributes order.
+        missing_fields_list = [
+            a for a in target.requested_attributes if a not in matched_fields
+        ]
+        matched_fields_list = [
+            a for a in target.requested_attributes if a in matched_fields
+        ]
+
+        if not matched_fields:
+            # Zero attributes corroborated across all passages.
+            return EvidenceResult(
+                status=EvidenceStatus.INSUFFICIENT,
+                missing_fields=list(target.requested_attributes),
+                evidence_directive=_absent_records_directive(
+                    list(target.requested_attributes)
+                ),
+            )
+        elif missing_fields_list:
+            # Some corroborated, some missing.
+            return EvidenceResult(
+                status=EvidenceStatus.PARTIALLY_SUFFICIENT,
+                matched_fields=matched_fields_list,
+                missing_fields=missing_fields_list,
+                evidence_directive=(
+                    f"Information partially found in your uploaded records. "
+                    f"Not found in records: {', '.join(missing_fields_list)}."
+                ),
+            )
+        else:
+            # All requested attributes corroborated.
+            return EvidenceResult(
+                status=EvidenceStatus.SUFFICIENT,
+                matched_fields=matched_fields_list,
+                evidence_directive=(
+                    "All requested information was found in your uploaded records."
+                ),
+            )
+
+    # ------------------------------------------------------------------
+    # Rule B: entity only — no requested attributes.
+    # ------------------------------------------------------------------
+    if target.target_entity:
+        entity_lower = target.target_entity.lower()
+        entity_found = any(
+            _keyword_present(entity_lower, p.chunk_text.lower())
+            for p in retrieval_result.passages
+        )
+        if entity_found:
+            return EvidenceResult(
+                status=EvidenceStatus.SUFFICIENT,
+                evidence_directive=(
+                    "All requested information was found in your uploaded records."
+                ),
+            )
+        return EvidenceResult(
+            status=EvidenceStatus.INSUFFICIENT,
+            evidence_directive=_absent_records_directive([target.target_entity]),
+        )
+
+    # ------------------------------------------------------------------
+    # Rule C: generic domain query — no entity, no attributes.
+    # ------------------------------------------------------------------
+    return EvidenceResult(
+        status=EvidenceStatus.SUFFICIENT,
+        evidence_directive="Document content is available.",
     )

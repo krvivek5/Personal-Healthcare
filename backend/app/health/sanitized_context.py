@@ -13,6 +13,18 @@ UUID_REGEX = re.compile(
     r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"
 )
 
+# ---------------------------------------------------------------------------
+# M4 S5 passage serialization limits
+# ---------------------------------------------------------------------------
+
+#: Per-passage hard character cap.  Prevents prompt bloat from abnormal
+#: chunk boundary snapping.  5 passages × 1200 = 6000 chars maximum.
+MAX_PASSAGE_CHARS: int = 1200
+
+#: Maximum passages serialized into the retrieved-passage block.
+#: Mirrors S4 RETRIEVAL_MAX_TOP_K so the full K result can always be rendered.
+MAX_RETRIEVED_PASSAGES: int = 5
+
 # Standard sequence of domains for deterministic ordering
 DOMAIN_ORDER = [
     "profile",
@@ -36,6 +48,28 @@ class SanitizedRecord(BaseModel):
     attributes: dict[str, Any]
 
 
+class PassageProvenance(BaseModel):
+    """Complete provenance metadata for a single qualified retrieved passage.
+
+    Stored server-side in ``SanitizedHealthContext.passage_map``.  Used by
+    S6 to enrich ``InquiryCitation`` with chunk-level attribution data.
+
+    No patient-identifiable information is stored here except for the
+    canonical ``document_id`` needed to resolve back to a ``MedicalDocument``
+    row for citation linkage.  This ID is never serialized into prompt text.
+    """
+
+    token: str  # e.g. "[DOC-1]"
+    document_id: uuid.UUID  # Canonical MedicalDocument.id for citation
+    chunk_id: uuid.UUID  # Specific DocumentChunk.id for attribution
+    page_number: Optional[int] = None
+    chunk_index: int
+    passage_text: str  # Verbatim chunk text (uncapped; cap applied in prompt)
+    display_name: str  # MedicalDocument.display_name
+    document_type: str  # MedicalDocument.document_type
+    document_date: Optional[date] = None
+
+
 class SanitizedHealthContext(BaseModel):
     """
     Sanitized context safe for external LLM payload transmission.
@@ -45,12 +79,19 @@ class SanitizedHealthContext(BaseModel):
     2. Reference tokens [REC-N] are assigned deterministically.
     3. Maintains a server-side mapping from token to authoritative database UUID.
     4. Query-scoped minimization excludes irrelevant sensitive health domains.
+    5. (M4 S5) passage_map provides chunk-level provenance for S6 citation
+       enrichment. passage_map values are server-side only and never serialized
+       into prompt text as raw UUIDs.
     """
 
     profile: Optional[dict[str, Any]] = None
     records: list[SanitizedRecord] = Field(default_factory=list)
     reference_map: dict[str, uuid.UUID] = Field(default_factory=dict)
     included_domains: list[str] = Field(default_factory=list)
+    # M4 S5: dual-resolution passage provenance map.
+    # Keys: both "[DOC-N]" and "DOC-N" for backward-compatible reconciliation.
+    # Values: PassageProvenance with chunk-level attribution for S6 citations.
+    passage_map: dict[str, PassageProvenance] = Field(default_factory=dict)
 
     def to_llm_payload(self) -> dict[str, Any]:
         """
@@ -76,6 +117,11 @@ class SanitizedHealthContext(BaseModel):
         """
         Returns a formatted, plain-text string representation of records with [REC-N]
         tokens suitable for prompt injection.
+
+        If ``passage_map`` is non-empty (SUFFICIENT / PARTIALLY_SUFFICIENT evidence),
+        appends a ``=== RETRIEVED PASSAGES ===`` block with sanitized passage text
+        (capped at ``MAX_PASSAGE_CHARS`` per passage).  The block is completely
+        omitted when evidence is INSUFFICIENT (empty ``passage_map``).
         """
         lines: list[str] = []
         if self.profile:
@@ -112,6 +158,45 @@ class SanitizedHealthContext(BaseModel):
                 )
                 lines.append("Content:")
                 lines.append(excerpt)
+
+        # M4 S5: Retrieved passage context block.
+        # Serialize only when passage_map is non-empty (SUFFICIENT or
+        # PARTIALLY_SUFFICIENT evidence).  Completely omitted for INSUFFICIENT
+        # evidence (caller leaves context.passages empty, so passage_map == {}).
+        bracketed_passage_tokens = [
+            k for k in self.passage_map if k.startswith("[DOC-")
+        ]
+        if bracketed_passage_tokens:
+            passage_blocks: list[str] = []
+            for token in bracketed_passage_tokens:
+                prov = self.passage_map[token]
+                display_name = prov.display_name or "Document"
+                date_str = (
+                    prov.document_date.isoformat()
+                    if prov.document_date
+                    else "not recorded"
+                )
+                page_str = (
+                    str(prov.page_number)
+                    if prov.page_number is not None
+                    else "not recorded"
+                )
+                doc_type = (prov.document_type or "DOCUMENT").upper()
+                # Apply per-passage character cap at serialization time.
+                # passage_map retains full text for S6 citation purposes.
+                passage_text = prov.passage_text
+                if len(passage_text) > MAX_PASSAGE_CHARS:
+                    passage_text = passage_text[:MAX_PASSAGE_CHARS]
+                header = (
+                    f"{token} Document: {display_name} | "
+                    f"Date: {date_str} | "
+                    f"Page: {page_str} | "
+                    f"Type: {doc_type}"
+                )
+                block = f"{header}\nPassage:\n{passage_text}"
+                passage_blocks.append(block)
+            # Header on its own line, then blocks separated by a blank line.
+            lines.append("=== RETRIEVED PASSAGES ===\n" + "\n\n".join(passage_blocks))
 
         return "\n".join(lines)
 
@@ -431,9 +516,47 @@ def build_sanitized_context(
             )
             doc_counter += 1
 
+    # 10. Passage Evidence Sanitization (M4 Slice 5)
+    # Processes context.passages populated by the orchestrator after
+    # evaluate_passage_evidence determines SUFFICIENT / PARTIALLY_SUFFICIENT.
+    # On INSUFFICIENT evidence the caller leaves context.passages empty,
+    # so passage_map is empty and the serialized block is omitted.
+    passage_map: dict[str, PassageProvenance] = {}
+
+    if context.passages:
+        passage_counter = 1
+        for pec in context.passages[:MAX_RETRIEVED_PASSAGES]:
+            token = f"[DOC-{passage_counter}]"
+            token_clean = f"DOC-{passage_counter}"
+
+            # reference_map: canonical MedicalDocument.id for backward-
+            # compatible reconciliation via reconcile_reference_tokens.
+            reference_map[token] = pec.document_id
+            reference_map[token_clean] = pec.document_id
+
+            # passage_map: full chunk-level provenance for S6 citation
+            # enrichment.  Both [DOC-N] and DOC-N keys enable reconciliation
+            # with or without bracket normalization.
+            provenance = PassageProvenance(
+                token=token,
+                document_id=pec.document_id,
+                chunk_id=pec.chunk_id,
+                page_number=pec.page_number,
+                chunk_index=pec.chunk_index,
+                passage_text=pec.chunk_text,
+                display_name=pec.display_name,
+                document_type=pec.document_type,
+                document_date=pec.document_date,
+            )
+            passage_map[token] = provenance
+            passage_map[token_clean] = provenance
+
+            passage_counter += 1
+
     return SanitizedHealthContext(
         profile=sanitized_profile,
         records=records,
         reference_map=reference_map,
         included_domains=included_domains,
+        passage_map=passage_map,
     )

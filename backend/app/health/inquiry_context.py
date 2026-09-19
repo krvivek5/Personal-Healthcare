@@ -34,6 +34,33 @@ class DocumentEvidenceContext(BaseModel):
     extracted_excerpt: str
 
 
+class PassageEvidenceContext(BaseModel):
+    """Lightweight, non-ORM representation of a qualified retrieved passage.
+
+    Mirrors the fields from ``RetrievedPassage`` (M4 S4) that are safe for
+    LLM-layer propagation.  ``patient_id`` is intentionally excluded — it
+    must not be serialized into any LLM payload or prompt block.
+
+    Callers are responsible for populating this from a ``RetrievedPassage``
+    after tenant isolation has been verified by ``evaluate_passage_evidence``.
+    Only qualified passages (those corroborating at least one requested
+    attribute or topical entity) should be placed here.
+    """
+
+    chunk_id: uuid.UUID
+    document_id: uuid.UUID
+    chunk_index: int
+    page_number: Optional[int] = None
+    chunk_text: str
+    display_name: str
+    document_type: str
+    document_date: Optional[date] = None
+    cosine_distance: float
+    similarity: float
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class StructuredHealthContext(BaseModel):
     """
     Canonical in-memory context representation required by M1.
@@ -51,6 +78,12 @@ class StructuredHealthContext(BaseModel):
     goals: list[GoalResponse] = Field(default_factory=list)
     recent_timeline_events: list[HealthEvent] = Field(default_factory=list)
     documents: list[DocumentEvidenceContext] = Field(default_factory=list)
+    # M4 S5: qualified retrieved passages from HybridRetrievalEngine.
+    # Only pre-qualified passages (corroborating at least one attribute or
+    # entity) are placed here after evaluate_passage_evidence runs.
+    # Empty by default; populated by the S6 orchestrator when domain is
+    # document-based (labs / reports / prescriptions / clinical_documents).
+    passages: list[PassageEvidenceContext] = Field(default_factory=list)
 
     model_config = ConfigDict(from_attributes=True)
 
