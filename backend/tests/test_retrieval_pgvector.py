@@ -32,7 +32,11 @@ import pytest
 import pytest_asyncio
 from alembic.config import Config
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import (
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 
 from alembic import command
 from app.core.config import settings
@@ -82,21 +86,59 @@ pytestmark = pytest.mark.skipif(
 
 
 # ---------------------------------------------------------------------------
-# Module-scoped async session factory (separate from the app session)
+# Fixtures
 # ---------------------------------------------------------------------------
 
 
-@pytest_asyncio.fixture(scope="module")
-async def pg_async_session_factory():
-    """Async session factory connected to the live PostgreSQL instance."""
+@pytest.fixture(scope="module")
+def pg_migrated():
+    """Apply Alembic migrations synchronously before any async test runs.
+
+    This is a *synchronous* module-scoped fixture so that ``alembic.command.upgrade``
+    (which internally calls ``asyncio.run()`` via ``env.py``) is executed outside
+    the pytest-asyncio event loop.  Calling ``asyncio.run()`` from inside a
+    running event loop raises ``RuntimeError``; keeping migration in a sync
+    fixture avoids this entirely.
+
+    Pattern mirrors ``pg_migrated_engine`` in ``test_document_chunks_schema.py``.
+    """
     import pathlib
+
+    from sqlalchemy import create_engine
+
+    url_sync = _pg_url_sync()
+    engine_sync = create_engine(url_sync, pool_pre_ping=True)
+    try:
+        with engine_sync.connect() as conn:
+            conn.execute(text("SELECT 1"))
+    except Exception as exc:
+        pytest.skip(f"PostgreSQL not accessible: {exc}")
+    finally:
+        engine_sync.dispose()
 
     backend_dir = pathlib.Path(__file__).parent.parent
     cfg = Config(str(backend_dir / "alembic.ini"))
     cfg.set_main_option("script_location", str(backend_dir / "alembic"))
     command.upgrade(cfg, "head")
 
-    engine = create_async_engine(_pg_url_async(), echo=False)
+
+@pytest_asyncio.fixture
+async def pg_async_session_factory(pg_migrated):  # noqa: ARG001
+    """Async session factory connected to the live PostgreSQL instance.
+
+    Function-scoped (not module-scoped) so the async engine is bound to the
+    same event loop as the test function.  pytest-asyncio creates a new event
+    loop per test function in AUTO mode; a module-scoped async fixture would
+    use a *different* (already-closed) loop when the second test runs.
+
+    Connection state leakage (autobegun transactions left open in the pool) is
+    prevented by the ``pg_session`` fixture's explicit ``rollback()`` call in
+    teardown, so no special pool configuration is needed here.
+
+    Depends on ``pg_migrated`` (synchronous, module-scoped) to guarantee that
+    Alembic ``command.upgrade`` has completed before the first test body runs.
+    """
+    engine = create_async_engine(_pg_url_async(), echo=False, pool_pre_ping=True)
     factory = async_sessionmaker(engine, expire_on_commit=False)
     yield factory
     await engine.dispose()
@@ -104,11 +146,42 @@ async def pg_async_session_factory():
 
 @pytest_asyncio.fixture
 async def pg_session(pg_async_session_factory):
-    """Isolated async session with automatic rollback after each test."""
+    """Isolated async session for integration tests.
+
+    Provides a single ``AsyncSession`` that lets production code
+    (``retrieve_document_passages``) manage its own real transactions, while
+    still cleaning up all test data after each test via explicit DELETE.
+
+    Why not a rollback-wrapping outer transaction?
+    -----------------------------------------------
+    ``retrieve_document_passages`` calls ``async with db.begin()``.  If an
+    outer test transaction is already open, this raises ``InvalidRequestError``
+    unless we downgrade it to a savepoint.  But ``SET LOCAL`` in PostgreSQL
+    only reverts at a *real* COMMIT/ROLLBACK, not at RELEASE SAVEPOINT, so the
+    GUC-scoping test fails with a savepoint approach.  Instead we let the
+    production code use real transactions and clean up by tracking which patient
+    UUIDs were created and issuing ``DELETE FROM patients`` at teardown.
+    Cascading deletes remove all child rows (documents, chunks, extractions).
+    """
+    _created_patient_ids: list[uuid.UUID] = []
+
     async with pg_async_session_factory() as session:
-        await session.begin()
-        yield session
-        await session.rollback()
+        # Attach the tracker so _create_patient can register IDs.
+        session._test_patient_ids = _created_patient_ids  # type: ignore[attr-defined]
+        try:
+            yield session
+        finally:
+            # Roll back any autobegun transaction from read-only operations
+            # (e.g. verify_pgvector_version) before attempting cleanup.
+            if session.in_transaction():
+                await session.rollback()
+            # Delete all rows created by this test (CASCADE handles children).
+            if _created_patient_ids:
+                async with session.begin():
+                    await session.execute(
+                        text("DELETE FROM patients WHERE id = ANY(:ids)"),
+                        {"ids": _created_patient_ids},
+                    )
 
 
 # ---------------------------------------------------------------------------
@@ -154,6 +227,11 @@ async def _create_patient(session: AsyncSession) -> Patient:
     patient = Patient(id=uuid.uuid4(), user_id=uuid.uuid4())
     session.add(patient)
     await session.flush()
+    await session.commit()
+    # Register for cleanup if tracker is attached.
+    tracker = getattr(session, "_test_patient_ids", None)
+    if tracker is not None:
+        tracker.append(patient.id)
     return patient
 
 
@@ -179,9 +257,6 @@ async def _create_doc_with_extraction(
         created_at=now,
         updated_at=now,
     )
-    session.add(doc)
-    await session.flush()
-
     extraction = DocumentExtraction(
         id=uuid.uuid4(),
         document_id=doc.id,
@@ -191,8 +266,10 @@ async def _create_doc_with_extraction(
         extraction_method="test",
         extraction_version="1.0",
     )
+    session.add(doc)
     session.add(extraction)
     await session.flush()
+    await session.commit()
     return doc
 
 
@@ -213,6 +290,7 @@ async def _create_chunk(
     )
     session.add(chunk)
     await session.flush()
+    await session.commit()
     return chunk
 
 
@@ -268,8 +346,8 @@ async def test_verify_pgvector_version_rejects_old_version(pg_session, monkeypat
 async def test_tenant_isolation_patient_b_chunks_invisible_to_patient_a(pg_session):
     """patient_A retrieval must never return chunks belonging to patient_B."""
     query_vec = _unit_vec(hot_index=0)
-    patient_a_vec = _unit_vec(hot_index=0)   # closest to query
-    patient_b_vec = _unit_vec(hot_index=0)   # also closest, but different patient
+    patient_a_vec = _unit_vec(hot_index=0)  # closest to query
+    patient_b_vec = _unit_vec(hot_index=0)  # also closest, but different patient
 
     patient_a = await _create_patient(pg_session)
     patient_b = await _create_patient(pg_session)
@@ -280,9 +358,7 @@ async def test_tenant_isolation_patient_b_chunks_invisible_to_patient_a(pg_sessi
     chunk_a = await _create_chunk(
         pg_session, doc_a, "Patient A lab result", 0, patient_a_vec
     )
-    await _create_chunk(
-        pg_session, doc_b, "Patient B lab result", 0, patient_b_vec
-    )
+    await _create_chunk(pg_session, doc_b, "Patient B lab result", 0, patient_b_vec)
 
     from unittest.mock import AsyncMock
 
@@ -326,12 +402,8 @@ async def test_closest_chunk_returned_first(pg_session):
     patient = await _create_patient(pg_session)
     doc = await _create_doc_with_extraction(pg_session, patient.id)
 
-    chunk_close = await _create_chunk(
-        pg_session, doc, "close chunk", 0, close_vec
-    )
-    chunk_far = await _create_chunk(
-        pg_session, doc, "far chunk", 1, far_vec
-    )
+    chunk_close = await _create_chunk(pg_session, doc, "close chunk", 0, close_vec)
+    chunk_far = await _create_chunk(pg_session, doc, "far chunk", 1, far_vec)
 
     from unittest.mock import AsyncMock
 
@@ -519,12 +591,13 @@ async def test_failed_extraction_excluded_from_retrieval(pg_session):
     patient = await _create_patient(pg_session)
 
     doc_ok = await _create_doc_with_extraction(
-        pg_session, patient.id, extraction_status="COMPLETED",
-        extracted_text="Good text here."
+        pg_session,
+        patient.id,
+        extraction_status="COMPLETED",
+        extracted_text="Good text here.",
     )
     doc_failed = await _create_doc_with_extraction(
-        pg_session, patient.id, extraction_status="FAILED",
-        extracted_text=None
+        pg_session, patient.id, extraction_status="FAILED", extracted_text=None
     )
 
     chunk_ok = await _create_chunk(pg_session, doc_ok, "valid lab chunk", 0, vec)
@@ -649,9 +722,7 @@ async def test_set_local_hnsw_iterative_scan_is_scoped(pg_session):
 
     # After the transaction block exits, the GUC must have reverted.
     # Re-use the session (still in the test transaction) to check.
-    result = await pg_session.execute(
-        text("SHOW hnsw.iterative_scan")
-    )
+    result = await pg_session.execute(text("SHOW hnsw.iterative_scan"))
     guc_val = result.scalar()
     # Default value before SET LOCAL is 'off' (pgvector default)
     assert guc_val != "strict_order", (
