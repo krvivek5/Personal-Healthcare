@@ -40,6 +40,10 @@ class Settings(BaseSettings):
     EMBEDDING_BATCH_SIZE: int = 50
     ALLOW_DEV_SYNTHETIC_PROVIDERS: bool = False
 
+    # Retrieval Configuration (Phase 2 — Milestone 4 — Slice 4)
+    RETRIEVAL_DEFAULT_TOP_K: int = 3
+    RETRIEVAL_MAX_TOP_K: int = 5
+
     @property
     def supabase_issuer(self) -> str:
         base = self.SUPABASE_URL.rstrip("/")
