@@ -185,6 +185,8 @@ async def upload_document(
     #    persists a FAILED/UNSUPPORTED extraction row; it does NOT roll back
     #    the document or return a non-2xx to the client.
     extraction_persisted = False
+    doc_id = doc.id
+
     try:
         extraction_result = await _extractor.extract_text(file_bytes, content_type)
         extraction = await persist_extraction(db, doc, extraction_result)
@@ -195,17 +197,34 @@ async def upload_document(
             try:
                 await chunk_and_persist_document(db, doc, extraction)
                 await db.commit()
+
+                # 8. Embed chunks — provider-neutral pipeline (non-fatal to upload)
+                try:
+                    from app.health.embedding_pipeline import embed_document_chunks
+
+                    await embed_document_chunks(db, doc)
+                    await db.commit()
+                except Exception as emb_exc:
+                    logger.warning(
+                        "Embedding deferred for document %s: %s",
+                        doc_id,
+                        emb_exc,
+                    )
+                    # Session hygiene: rollback aborted transaction state
+                    # so session remains healthy for subsequent refresh/queries.
+                    await db.rollback()
             except Exception as chunk_exc:
                 logger.error(
                     "Chunking failure for document %s: %s",
-                    doc.id,
+                    doc_id,
                     chunk_exc,
                 )
                 await db.rollback()
+
     except Exception as ext_exc:  # pragma: no cover — defensive belt-and-braces
         logger.error(
             "Extraction/persistence error for document %s: %s",
-            doc.id,
+            doc_id,
             ext_exc,
         )
         # Do NOT re-raise — the document upload already succeeded.

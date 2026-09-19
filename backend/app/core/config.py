@@ -30,6 +30,16 @@ class Settings(BaseSettings):
     LLM_TIMEOUT_SECONDS: float = 10.0
     LLM_MAX_RETRIES: int = 2
 
+    # Embedding Configuration
+    EMBEDDING_PROVIDER: str = "mock"
+    EMBEDDING_MODEL: str = "models/gemini-embedding-2"
+    GEMINI_API_KEY: str = ""
+    EMBEDDING_DIMENSION: int = 768
+    EMBEDDING_TIMEOUT_SECONDS: float = 30.0
+    EMBEDDING_MAX_RETRIES: int = 2
+    EMBEDDING_BATCH_SIZE: int = 50
+    ALLOW_DEV_SYNTHETIC_PROVIDERS: bool = False
+
     @property
     def supabase_issuer(self) -> str:
         base = self.SUPABASE_URL.rstrip("/")
