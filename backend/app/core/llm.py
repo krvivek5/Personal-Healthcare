@@ -1,7 +1,7 @@
 import uuid
 from typing import Protocol
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.health.evidence_evaluator import EvidenceResult
 from app.health.inquiry_context import StructuredHealthContext
@@ -13,10 +13,20 @@ from app.schemas.inquiry import (
 
 
 class SynthesisResult(BaseModel):
-    """The raw synthesis result from the LLM provider."""
+    """The raw synthesis result from the LLM provider.
+
+    M4 S6 extension: ``cited_tokens`` preserves the original ``[DOC-N]``
+    or ``[REC-N]`` tokens that the LLM cited, aligned 1:1 with
+    ``cited_record_ids``.  The orchestrator uses these tokens to look up
+    passage-level metadata in ``SanitizedHealthContext.passage_map``.
+
+    Invariant: ``len(cited_tokens) == len(cited_record_ids)`` always.
+    """
 
     answer_text: str
     cited_record_ids: list[uuid.UUID]
+    # M4 S6: original tokens, parallel to cited_record_ids.
+    cited_tokens: list[str] = Field(default_factory=list)
 
 
 class LLMProvider(Protocol):
@@ -104,28 +114,57 @@ class MockLLMProvider:
 
         # 3. Partially or Fully Sufficient Evidence
         citations: list[uuid.UUID] = []
+        tokens: list[str] = []
         seen_ids: set[uuid.UUID] = set()
 
-        for r in evidence.matched_records:
-            r_id = getattr(r, "id", None)
-            if isinstance(r_id, uuid.UUID) and r_id not in seen_ids:
-                citations.append(r_id)
-                seen_ids.add(r_id)
+        # M4 path: passage-based citations take priority.
+        if context.passages:
+            for i, p in enumerate(context.passages, start=1):
+                doc_id = p.document_id
+                if isinstance(doc_id, uuid.UUID) and doc_id not in seen_ids:
+                    token = f"[DOC-{i}]"
+                    citations.append(doc_id)
+                    tokens.append(token)
+                    seen_ids.add(doc_id)
+        else:
+            # M3 path: structured records then whole-document citations.
+            for r in evidence.matched_records:
+                r_id = getattr(r, "id", None)
+                if isinstance(r_id, uuid.UUID) and r_id not in seen_ids:
+                    citations.append(r_id)
+                    tokens.append("")  # structured records have no [DOC-N] token
+                    seen_ids.add(r_id)
 
-        for doc in context.documents:
-            if (
-                isinstance(doc.document_id, uuid.UUID)
-                and doc.document_id not in seen_ids
-            ):
-                citations.append(doc.document_id)
-                seen_ids.add(doc.document_id)
+            for doc in context.documents:
+                if (
+                    isinstance(doc.document_id, uuid.UUID)
+                    and doc.document_id not in seen_ids
+                ):
+                    citations.append(doc.document_id)
+                    tokens.append("")  # whole-doc citations have no passage token
+                    seen_ids.add(doc.document_id)
 
         answer_text = ""
         if evidence.status == EvidenceStatus.PARTIALLY_SUFFICIENT:
             answer_text = evidence.evidence_directive
         else:
             # Generate deterministic mock answer
-            if context.documents:
+            if context.passages:
+                p0 = context.passages[0]
+                date_str = (
+                    f" from {p0.document_date.isoformat()}" if p0.document_date else ""
+                )
+                if target.target_entity:
+                    answer_text = (
+                        f"According to your uploaded {p0.display_name}{date_str}, "
+                        f"records confirm {target.target_entity}."
+                    )
+                else:
+                    answer_text = (
+                        f"According to your uploaded {p0.display_name}{date_str}, "
+                        "records confirm requested information."
+                    )
+            elif context.documents:
                 doc = context.documents[0]
                 date_str = (
                     f" from {doc.document_date.isoformat()}"
@@ -156,4 +195,5 @@ class MockLLMProvider:
         return SynthesisResult(
             answer_text=answer_text.strip(),
             cited_record_ids=citations,
+            cited_tokens=tokens,
         )

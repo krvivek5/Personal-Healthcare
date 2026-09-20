@@ -1,4 +1,5 @@
 import json
+import uuid
 
 import httpx
 
@@ -16,7 +17,6 @@ from app.health.evidence_evaluator import EvidenceResult
 from app.health.inquiry_context import StructuredHealthContext
 from app.health.sanitized_context import (
     build_sanitized_context,
-    reconcile_reference_tokens,
 )
 from app.schemas.inquiry import (
     InquiryTarget,
@@ -167,10 +167,28 @@ class OpenAIProvider(LLMProvider):
             raise LLMMalformedResponseError("Failed to parse structured output") from e
 
         # Reconcile references using the server-side map from Slice 2
-        # Only map references to records that exist in the sanitized reference map
-        resolved_uuids = reconcile_reference_tokens(cited_refs, sanitized.reference_map)
+        # Only map references to records that exist in the sanitized reference map.
+        # Keep the resolved (token, uuid) pairs aligned so cited_tokens is
+        # deterministically parallel to cited_record_ids.
+        resolved_pairs: list[tuple[str, uuid.UUID]] = []
+        seen: set[uuid.UUID] = set()
+        for raw_token in cited_refs:
+            token = raw_token.strip()
+            matched_uuid = sanitized.reference_map.get(token)
+            if not matched_uuid:
+                clean = token.strip("[]")
+                matched_uuid = sanitized.reference_map.get(
+                    f"[{clean}]"
+                ) or sanitized.reference_map.get(clean)
+            if matched_uuid and matched_uuid not in seen:
+                resolved_pairs.append((token, matched_uuid))
+                seen.add(matched_uuid)
+
+        resolved_tokens = [t for t, _ in resolved_pairs]
+        resolved_uuids = [u for _, u in resolved_pairs]
 
         return SynthesisResult(
             answer_text=answer_text,
             cited_record_ids=resolved_uuids,
+            cited_tokens=resolved_tokens,
         )

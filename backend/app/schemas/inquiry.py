@@ -29,13 +29,25 @@ class InquiryTarget(BaseModel):
 
 
 class InquiryCitation(BaseModel):
-    """A verified citation pointing to a structured record in the user's data."""
+    """A verified citation pointing to a structured record in the user's data.
+
+    M3 fields (citation_id, entity_type, record_id, label, verification_state)
+    are always present.
+
+    M4 S6 fields (chunk_id, page_number, passage_text) are present only when
+    the citation originates from a passage-level retrieval.  They are Optional
+    with None defaults to preserve full backward compatibility.
+    """
 
     citation_id: int
     entity_type: str
     record_id: UUID
     label: str
     verification_state: VerificationState
+    # M4 S6: passage-level provenance — absent for structured-domain citations.
+    chunk_id: Optional[UUID] = None
+    page_number: Optional[int] = None
+    passage_text: Optional[str] = None
 
 
 class SafetyGuardrailState(BaseModel):

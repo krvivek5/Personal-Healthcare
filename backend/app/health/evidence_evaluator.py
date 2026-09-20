@@ -5,17 +5,23 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Any, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.health.inquiry_context import StructuredHealthContext
-from app.health.retrieval import RetrievalResult
+from app.health.retrieval import RetrievalResult, RetrievedPassage
 from app.schemas.inquiry import EvidenceStatus, InquiryTarget
 
 logger = logging.getLogger(__name__)
 
 
 class EvidenceResult(BaseModel):
-    """Clean internal result representation for response synthesis."""
+    """Clean internal result representation for response synthesis.
+
+    M4 S6 extension: ``qualified_passages`` carries the exact passage
+    instances that corroborated the clinical query.  The S6 orchestrator
+    maps these directly into ``context.passages`` without re-running
+    ``_keyword_present``.
+    """
 
     status: EvidenceStatus
     matched_records: list[Any] = []
@@ -23,6 +29,10 @@ class EvidenceResult(BaseModel):
     missing_fields: list[str] = []
     temporal_interpretation: str = "all"
     evidence_directive: str = ""
+    # M4 S6: authoritative S5 → S6 qualified-passage handoff.
+    # Populated by evaluate_passage_evidence; empty for INSUFFICIENT evidence
+    # or structured-domain evaluation paths.
+    qualified_passages: list[RetrievedPassage] = Field(default_factory=list)
 
 
 def evaluate_evidence(
@@ -489,11 +499,17 @@ def evaluate_passage_evidence(
     # ------------------------------------------------------------------
     if target.requested_attributes:
         matched_fields: set[str] = set()
+        # Track which passages contributed at least one match.
+        qualifying_passages_a: list[RetrievedPassage] = []
 
         for p in retrieval_result.passages:
+            passage_contributed = False
             for attr in target.requested_attributes:
                 if _keyword_present(attr.lower(), p.chunk_text.lower()):
                     matched_fields.add(attr)
+                    passage_contributed = True
+            if passage_contributed:
+                qualifying_passages_a.append(p)
 
         # Deterministic ordering: preserve target.requested_attributes order.
         missing_fields_list = [
@@ -522,6 +538,7 @@ def evaluate_passage_evidence(
                     f"Information partially found in your uploaded records. "
                     f"Not found in records: {', '.join(missing_fields_list)}."
                 ),
+                qualified_passages=qualifying_passages_a,
             )
         else:
             # All requested attributes corroborated.
@@ -531,6 +548,7 @@ def evaluate_passage_evidence(
                 evidence_directive=(
                     "All requested information was found in your uploaded records."
                 ),
+                qualified_passages=qualifying_passages_a,
             )
 
     # ------------------------------------------------------------------
@@ -538,16 +556,18 @@ def evaluate_passage_evidence(
     # ------------------------------------------------------------------
     if target.target_entity:
         entity_lower = target.target_entity.lower()
-        entity_found = any(
-            _keyword_present(entity_lower, p.chunk_text.lower())
+        qualifying_passages_b: list[RetrievedPassage] = [
+            p
             for p in retrieval_result.passages
-        )
-        if entity_found:
+            if _keyword_present(entity_lower, p.chunk_text.lower())
+        ]
+        if qualifying_passages_b:
             return EvidenceResult(
                 status=EvidenceStatus.SUFFICIENT,
                 evidence_directive=(
                     "All requested information was found in your uploaded records."
                 ),
+                qualified_passages=qualifying_passages_b,
             )
         return EvidenceResult(
             status=EvidenceStatus.INSUFFICIENT,
@@ -556,8 +576,10 @@ def evaluate_passage_evidence(
 
     # ------------------------------------------------------------------
     # Rule C: generic domain query — no entity, no attributes.
+    # All retrieved passages qualify.
     # ------------------------------------------------------------------
     return EvidenceResult(
         status=EvidenceStatus.SUFFICIENT,
         evidence_directive="Document content is available.",
+        qualified_passages=list(retrieval_result.passages),
     )
