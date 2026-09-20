@@ -175,10 +175,13 @@ describe('HealthInquiryView', () => {
         },
         {
           citation_id: 2,
-          entity_type: 'MEDICATION',
+          entity_type: 'DOCUMENT',
           record_id: 'uuid-2',
-          label: 'Albuterol',
-          verification_state: 'SOURCE_RECORDED'
+          label: 'Lab Report',
+          verification_state: 'SOURCE_RECORDED',
+          chunk_id: 'chunk-123',
+          page_number: 4,
+          passage_text: 'This is the passage.'
         }
       ],
       safety: { triggered: false, advisory_message: null },
@@ -200,7 +203,8 @@ describe('HealthInquiryView', () => {
 
     expect(screen.getByTestId('citation-2')).toBeInTheDocument()
     expect(screen.getByText('[2]')).toBeInTheDocument()
-    expect(screen.getByText(/Albuterol/)).toBeInTheDocument()
+    expect(screen.getByText(/Lab Report/)).toBeInTheDocument()
+    expect(screen.getByTestId('citation-page-2')).toHaveTextContent('PAGE 4')
   })
 
   it('renders safety advisory independently of evidence status', async () => {
@@ -472,5 +476,54 @@ describe('HealthInquiryView', () => {
     expect(mockAnchorClick).toHaveBeenCalled()
 
     HTMLAnchorElement.prototype.click = originalClick
+  })
+
+  it('renders explicit missing-page behavior and excerpt toggle when page is null', async () => {
+    vi.mocked(healthInquiryApi.submit).mockResolvedValueOnce({
+      query: 'What was my creatinine?',
+      answer: 'According to your records, creatinine was normal.',
+      evidence_status: 'SUFFICIENT',
+      citations: [
+        {
+          citation_id: 1,
+          entity_type: 'DOCUMENT',
+          record_id: 'doc-uuid-1',
+          label: 'Lab Report',
+          verification_state: 'SOURCE_RECORDED',
+          page_number: null,
+          chunk_id: 'chunk-999',
+          passage_text: 'Creatinine was normal.'
+        }
+      ],
+      safety: { triggered: false, advisory_message: null },
+      generated_at: '2026-09-16T12:00:00Z'
+    })
+
+    render(<HealthInquiryView />)
+    fireEvent.change(screen.getByTestId('inquiry-query-input'), { target: { value: 'What was my creatinine?' } })
+    fireEvent.click(screen.getByTestId('inquiry-submit-btn'))
+
+    await waitFor(() => {
+      expect(screen.getByTestId('citation-1')).toBeInTheDocument()
+    })
+
+    // No PAGE badge should be rendered
+    expect(screen.queryByTestId('citation-page-1')).not.toBeInTheDocument()
+    expect(screen.queryByText(/PAGE null/i)).not.toBeInTheDocument()
+
+    const excerptBtn = screen.getByTestId('inspect-excerpt-btn-1')
+    fireEvent.click(excerptBtn)
+
+    expect(screen.getByTestId('passage-excerpt-1')).toBeInTheDocument()
+    expect(screen.getByText('Retrieved Passage Excerpt (Page not recorded):')).toBeInTheDocument()
+    expect(screen.getByText('Creatinine was normal.')).toBeInTheDocument()
+    expect(excerptBtn).toHaveTextContent('Hide Excerpt')
+
+    const detailsBtn = screen.getByTestId('inspect-details-btn-1')
+    fireEvent.click(detailsBtn)
+
+    expect(screen.getByTestId('citation-details-1')).toBeInTheDocument()
+    expect(screen.getByText('not recorded', { selector: 'div:nth-child(4)' })).toBeInTheDocument()
+    expect(screen.getByText('chunk-999')).toBeInTheDocument()
   })
 })

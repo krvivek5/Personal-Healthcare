@@ -8,13 +8,14 @@ export const HealthInquiryView: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false)
   const [response, setResponse] = useState<HealthInquiryResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [downloadingId, setDownloadingId] = useState<string | null>(null)
+  const [downloadingCitationId, setDownloadingCitationId] = useState<number | null>(null)
   const [downloadError, setDownloadError] = useState<{ citationId: number; message: string } | null>(null)
-  const [expandedCitationId, setExpandedCitationId] = useState<number | null>(null)
+  const [expandedDetailsCitationId, setExpandedDetailsCitationId] = useState<number | null>(null)
+  const [expandedExcerptCitationId, setExpandedExcerptCitationId] = useState<number | null>(null)
 
   const handleDownloadDocument = async (recordId: string, citationId: number, fileName?: string) => {
     if (!session?.access_token) return
-    setDownloadingId(recordId)
+    setDownloadingCitationId(citationId)
     setDownloadError(null)
 
     try {
@@ -33,7 +34,7 @@ export const HealthInquiryView: React.FC = () => {
         message: err instanceof Error ? err.message : 'Failed to download document',
       })
     } finally {
-      setDownloadingId(null)
+      setDownloadingCitationId(null)
     }
   }
 
@@ -45,7 +46,8 @@ export const HealthInquiryView: React.FC = () => {
     setError(null)
     setResponse(null)
     setDownloadError(null)
-    setExpandedCitationId(null)
+    setExpandedDetailsCitationId(null)
+    setExpandedExcerptCitationId(null)
 
     try {
       const result = await healthInquiryApi.submit(session.access_token, { query: query.trim() })
@@ -156,7 +158,7 @@ export const HealthInquiryView: React.FC = () => {
                     const isDocument = citation.entity_type === 'DOCUMENT'
                     if (!isDocument) {
                       return (
-                        <li key={`${citation.entity_type}-${citation.record_id}`} data-testid={`citation-${citation.citation_id}`} style={{ display: 'flex', alignItems: 'flex-start', gap: '0.5rem', fontSize: '0.9rem' }}>
+                        <li key={`citation-${citation.citation_id}`} data-testid={`citation-${citation.citation_id}`} style={{ display: 'flex', alignItems: 'flex-start', gap: '0.5rem', fontSize: '0.9rem' }}>
                           <span style={{ color: '#0284c7', fontWeight: 600 }}>[{citation.citation_id}]</span>
                           <div style={{ display: 'flex', flexDirection: 'column' }}>
                             <span style={{ color: '#334155' }}>
@@ -170,13 +172,14 @@ export const HealthInquiryView: React.FC = () => {
                       )
                     }
 
-                    const isExpanded = expandedCitationId === citation.citation_id
-                    const isDownloading = downloadingId === citation.record_id
+                    const isExpandedDetails = expandedDetailsCitationId === citation.citation_id
+                    const isExpandedExcerpt = expandedExcerptCitationId === citation.citation_id
+                    const isDownloading = downloadingCitationId === citation.citation_id
                     const hasError = downloadError?.citationId === citation.citation_id
 
                     return (
                       <li
-                        key={`${citation.entity_type}-${citation.record_id}`}
+                        key={`citation-${citation.citation_id}`}
                         data-testid={`citation-${citation.citation_id}`}
                         style={{ listStyle: 'none' }}
                       >
@@ -220,6 +223,23 @@ export const HealthInquiryView: React.FC = () => {
                               >
                                 {citation.entity_type}
                               </span>
+                              {citation.page_number != null && citation.page_number > 0 && (
+                                <span
+                                  data-testid={`citation-page-${citation.citation_id}`}
+                                  style={{
+                                    background: '#e0e7ff',
+                                    color: '#4338ca',
+                                    fontSize: '0.75rem',
+                                    fontWeight: 600,
+                                    padding: '0.2rem 0.4rem',
+                                    borderRadius: '4px',
+                                    border: '1px solid #c7d2fe',
+                                    textTransform: 'uppercase',
+                                  }}
+                                >
+                                  PAGE {citation.page_number}
+                                </span>
+                              )}
                               <span
                                 data-testid={`citation-state-${citation.citation_id}`}
                                 style={{
@@ -237,10 +257,29 @@ export const HealthInquiryView: React.FC = () => {
                             </div>
 
                             <div style={{ display: 'flex', gap: '0.5rem' }}>
+                              {citation.passage_text && (
+                                <button
+                                  type="button"
+                                  data-testid={`inspect-excerpt-btn-${citation.citation_id}`}
+                                  onClick={() => setExpandedExcerptCitationId(isExpandedExcerpt ? null : citation.citation_id)}
+                                  style={{
+                                    background: 'transparent',
+                                    color: '#0284c7',
+                                    border: '1px solid #0284c7',
+                                    padding: '0.35rem 0.75rem',
+                                    borderRadius: '4px',
+                                    fontSize: '0.8rem',
+                                    cursor: 'pointer',
+                                    fontWeight: 500,
+                                  }}
+                                >
+                                  {isExpandedExcerpt ? 'Hide Excerpt' : 'View Excerpt'}
+                                </button>
+                              )}
                               <button
                                 type="button"
                                 data-testid={`inspect-details-btn-${citation.citation_id}`}
-                                onClick={() => setExpandedCitationId(isExpanded ? null : citation.citation_id)}
+                                onClick={() => setExpandedDetailsCitationId(isExpandedDetails ? null : citation.citation_id)}
                                 style={{
                                   background: 'transparent',
                                   color: '#475569',
@@ -252,7 +291,7 @@ export const HealthInquiryView: React.FC = () => {
                                   fontWeight: 500,
                                 }}
                               >
-                                {isExpanded ? 'Hide Details' : 'Inspect Details'}
+                                {isExpandedDetails ? 'Hide Details' : 'Inspect Details'}
                               </button>
                               <button
                                 type="button"
@@ -297,7 +336,33 @@ export const HealthInquiryView: React.FC = () => {
                             </div>
                           )}
 
-                          {isExpanded && (
+                          {isExpandedExcerpt && citation.passage_text && (
+                            <div
+                              data-testid={`passage-excerpt-${citation.citation_id}`}
+                              style={{
+                                marginTop: '0.75rem',
+                                padding: '0.75rem',
+                                background: '#f8fafc',
+                                border: '1px solid #e2e8f0',
+                                borderLeft: '3px solid #0284c7',
+                                borderRadius: '4px',
+                                fontSize: '0.875rem',
+                                color: '#334155',
+                                lineHeight: '1.5',
+                                maxHeight: '200px',
+                                overflowY: 'auto',
+                                whiteSpace: 'pre-wrap',
+                                wordBreak: 'break-word',
+                              }}
+                            >
+                              <div style={{ fontWeight: 600, color: '#0f172a', marginBottom: '0.35rem' }}>
+                                Retrieved Passage Excerpt ({citation.page_number != null && citation.page_number > 0 ? `Page ${citation.page_number}` : 'Page not recorded'}):
+                              </div>
+                              <div>{citation.passage_text}</div>
+                            </div>
+                          )}
+
+                          {isExpandedDetails && (
                             <div
                               data-testid={`citation-details-${citation.citation_id}`}
                               style={{
@@ -313,6 +378,8 @@ export const HealthInquiryView: React.FC = () => {
                             >
                               <div><strong>Document Display:</strong> {citation.label}</div>
                               <div><strong>Canonical Record ID:</strong> <code style={{ color: '#0f172a' }}>{citation.record_id}</code></div>
+                              <div><strong>Chunk ID:</strong> <code style={{ color: '#0f172a' }}>{citation.chunk_id || 'not recorded'}</code></div>
+                              <div><strong>Page Number:</strong> {citation.page_number != null && citation.page_number > 0 ? citation.page_number : 'not recorded'}</div>
                               <div><strong>Entity Type:</strong> {citation.entity_type}</div>
                               <div><strong>Verification State:</strong> {citation.verification_state}</div>
                             </div>

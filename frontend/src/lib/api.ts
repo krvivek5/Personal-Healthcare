@@ -519,6 +519,9 @@ export interface InquiryCitation {
   record_id: string
   label: string
   verification_state: string
+  chunk_id?: string | null
+  page_number?: number | null
+  passage_text?: string | null
 }
 
 export interface SafetyGuardrailState {

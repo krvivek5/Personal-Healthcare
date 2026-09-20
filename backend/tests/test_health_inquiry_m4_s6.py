@@ -506,6 +506,70 @@ def test_citation_reconciliation_duplicate_token_emits_one():
     assert verified[0].record_id == doc_id
 
 
+def test_citation_reconciliation_distinct_tokens_same_document_emits_both():
+    """Distinct tokens for the same document → both citations emitted."""
+    from app.api.health_inquiry import _build_record_map
+
+    doc_id = uuid.uuid4()
+    pec1 = PassageEvidenceContext(
+        chunk_id=uuid.uuid4(),
+        document_id=doc_id,
+        chunk_index=0,
+        page_number=1,
+        chunk_text="cholesterol data",
+        display_name="Lipid Panel",
+        document_type="lab_report",
+        document_date=date(2025, 6, 1),
+        cosine_distance=0.15,
+        similarity=0.85,
+    )
+    pec2 = PassageEvidenceContext(
+        chunk_id=uuid.uuid4(),
+        document_id=doc_id,
+        chunk_index=1,
+        page_number=2,
+        chunk_text="hdl data",
+        display_name="Lipid Panel",
+        document_type="lab_report",
+        document_date=date(2025, 6, 1),
+        cosine_distance=0.15,
+        similarity=0.85,
+    )
+    context = StructuredHealthContext(passages=[pec1, pec2])
+    record_map = _build_record_map(context)
+
+    # Both entries resolve to the same document_id, but distinct tokens
+    cited_record_ids = [doc_id, doc_id]
+    cited_tokens = ["[DOC-1]", "[DOC-2]"]
+
+    verified: list[InquiryCitation] = []
+    seen_tokens: set[str] = set()
+    counter = 1
+    for rid, token in zip(cited_record_ids, cited_tokens):
+        if token in seen_tokens:
+            continue
+        if rid not in record_map:
+            continue
+        entity_type, label, vs = record_map[rid]
+        verified.append(
+            InquiryCitation(
+                citation_id=counter,
+                entity_type=entity_type,
+                record_id=rid,
+                label=label,
+                verification_state=vs,
+            )
+        )
+        seen_tokens.add(token)
+        counter += 1
+
+    assert len(verified) == 2
+    assert verified[0].record_id == doc_id
+    assert verified[1].record_id == doc_id
+    assert verified[0].citation_id == 1
+    assert verified[1].citation_id == 2
+
+
 def test_citation_reconciliation_unknown_token_ignored():
     """Unknown / hallucinated token → not present in verified citations."""
     from app.api.health_inquiry import _build_record_map

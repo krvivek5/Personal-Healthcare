@@ -266,14 +266,22 @@ async def submit_health_inquiry(
             update={"cited_record_ids": [], "cited_tokens": []}
         )
 
-    seen_record_ids: set[uuid.UUID] = set()
+    seen_tokens: set[str] = set()
+    seen_structured_ids: set[uuid.UUID] = set()
 
     for rid, token in zip(
         synthesis_result.cited_record_ids, synthesis_result.cited_tokens
     ):
-        # Deduplicate: duplicate token → emit only one citation.
-        if rid in seen_record_ids:
-            continue
+        # For passage-backed citations, deduplicate by token:
+        if token:
+            if token in seen_tokens:
+                continue
+            seen_tokens.add(token)
+        else:
+            # For structured-domain citations without tokens, deduplicate by record_id:
+            if rid in seen_structured_ids:
+                continue
+            seen_structured_ids.add(rid)
 
         # Reject foreign / hallucinated UUIDs.
         if rid not in record_map:
@@ -307,7 +315,6 @@ async def submit_health_inquiry(
                 passage_text=passage_text,
             )
         )
-        seen_record_ids.add(rid)
         citation_id_counter += 1
 
     # 10. Return Grounded Response

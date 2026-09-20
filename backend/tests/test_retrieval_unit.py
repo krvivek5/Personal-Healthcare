@@ -161,9 +161,7 @@ def test_domain_to_document_types_no_overlaps():
     seen: dict[str, str] = {}
     for domain, types in DOMAIN_TO_DOCUMENT_TYPES.items():
         for t in types:
-            assert t not in seen, (
-                f"'{t}' appears in both '{seen[t]}' and '{domain}'"
-            )
+            assert t not in seen, f"'{t}' appears in both '{seen[t]}' and '{domain}'"
             seen[t] = domain
 
 
@@ -404,9 +402,7 @@ async def test_mixed_known_and_unknown_domain_uses_known_only():
 async def test_provider_embedding_error_raises_retrieval_provider_error():
     """EmbeddingError from provider -> RetrievalProviderError (no raw errors escape)."""
     provider = AsyncMock()
-    provider.embed_text = AsyncMock(
-        side_effect=EmbeddingProviderError("upstream 500")
-    )
+    provider.embed_text = AsyncMock(side_effect=EmbeddingProviderError("upstream 500"))
     db = AsyncMock()
 
     with pytest.raises(RetrievalProviderError, match="Embedding provider failed"):

@@ -350,9 +350,7 @@ async def retrieve_document_passages(
         async with db.begin():
             # Transaction-local GUC: automatically reverts on commit/rollback.
             # Prevents GUC state from leaking across pooled connections.
-            await db.execute(
-                text("SET LOCAL hnsw.iterative_scan = 'strict_order'")
-            )
+            await db.execute(text("SET LOCAL hnsw.iterative_scan = 'strict_order'"))
 
             # ----------------------------------------------------------------
             # Stage 1 subquery: distance-only ORDER BY so PostgreSQL uses the
@@ -400,9 +398,7 @@ async def retrieve_document_passages(
                     func.length(func.trim(DocumentChunk.chunk_text)) > 0,
                 )
                 # Stage 1: distance-only -> HNSW index scan is used.
-                .order_by(
-                    DocumentChunk.embedding.cosine_distance(query_vector).asc()
-                )
+                .order_by(DocumentChunk.embedding.cosine_distance(query_vector).asc())
                 .limit(effective_top_k)
             ).subquery("candidate_chunks")
 
