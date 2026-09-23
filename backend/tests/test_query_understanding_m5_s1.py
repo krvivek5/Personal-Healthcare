@@ -111,13 +111,29 @@ def test_attribute_only_queries():
     assert not t.clarification_required
 
     t = parse_natural_language_query("What clinic did I visit?")
-    # 'clinic' is an attribute without matching domain anchor;
-    # spec mandates attribute queries must never trigger clarification.
     assert not t.candidate_structured_domains
-    assert not t.candidate_document_domains
+    assert "clinical_documents" in t.candidate_document_domains
+    assert "reports" in t.candidate_document_domains
     assert "clinic" in t.requested_attributes
     assert not t.clarification_required
-    assert t.routing_mode == RoutingMode.UNROUTABLE
+    assert t.routing_mode == RoutingMode.DOCUMENT_ONLY
+
+
+def test_s3_implicit_queries():
+    t = parse_natural_language_query("What is my doctor's phone number?")
+    assert "contact_number" in t.requested_attributes
+    assert "physician_name" not in t.requested_attributes
+    assert t.routing_mode == RoutingMode.DOCUMENT_ONLY
+
+    t = parse_natural_language_query("What did my doctor say?")
+    assert "consultation_notes" in t.requested_attributes
+    assert t.target_entity is None
+    assert t.routing_mode == RoutingMode.DOCUMENT_ONLY
+
+    t = parse_natural_language_query("What is in my latest report?")
+    assert t.target_entity is None
+    assert t.requested_attributes == []
+    assert t.temporal_constraint.scope == TemporalScope.ALL
 
 
 # Dimension 7: Broad Medical-Record Queries

@@ -328,43 +328,65 @@ def parse_natural_language_query(query: str) -> InquiryTarget:
     # Stage 3: Entity Extraction
     entity = _extract_entity(query_lower)
 
-    # If document domains are present but no entity yet, extract document topic
-    if entity is None and candidate_document_domains:
-        all_doc_keywords = sorted(
-            list(
-                LAB_ANCHORS
-                | DIAGNOSTIC_ANCHORS
-                | CONSULTATION_ANCHORS
-                | PROVIDER_ANCHORS
-                | {"discharge summary"}
-            ),
-            key=len,
-            reverse=True,
-        )
-        for kw in all_doc_keywords:
-            if kw in query_lower:
-                entity = kw
-                break
-
     # Stage 4: Attribute Extraction
     attributes = []
-    if _matches_any(query_lower, {"dosage", "dose"}):
+    if _matches_any(query_lower, {"dosage", "dose", "strength", "amount", "how much"}):
         attributes.append("dosage")
-    if _matches_any(query_lower, {"clinic", "hospital", "facility"}):
+    if _matches_any(
+        query_lower,
+        {
+            "clinic",
+            "hospital",
+            "facility",
+            "practice",
+            "health center",
+            "medical center",
+        },
+    ):
         attributes.append("clinic")
     if _matches_any(query_lower, {"blood type", "blood group"}):
         attributes.append("blood_group")
     if _matches_any(
-        query_lower,
-        {"physician", "doctor", "prescriber", "who signed", "who prescribed", "name"},
+        query_lower, {"status", "active", "stopped", "discontinued", "resolved"}
     ):
-        attributes.append("physician_name")
-    if _matches_any(query_lower, {"status", "active", "stopped"}):
         attributes.append("status")
-    if _matches_any(query_lower, {"frequency", "how often"}):
+    if _matches_any(query_lower, {"frequency", "how often", "schedule", "interval"}):
         attributes.append("frequency")
-    if _matches_any(query_lower, {"doctor say", "doctor note", "consultation note"}):
+    if _matches_any(
+        query_lower,
+        {
+            "doctor say",
+            "doctor note",
+            "consultation",
+            "advice",
+            "recommendation",
+            "instructions",
+        },
+    ):
         attributes.append("consultation_notes")
+    if _matches_any(
+        query_lower, {"phone", "phone number", "telephone", "contact", "fax", "call"}
+    ):
+        attributes.append("contact_number")
+
+    if _matches_any(
+        query_lower,
+        {
+            "physician",
+            "doctor",
+            "prescriber",
+            "clinician",
+            "provider",
+            "who signed",
+            "who wrote",
+            "who prescribed",
+        },
+    ):
+        if (
+            "contact_number" not in attributes
+            and "consultation_notes" not in attributes
+        ):
+            attributes.append("physician_name")
 
     # Stage 4: Temporal Constraints
     temporal_scope = TemporalScope.ALL
@@ -413,6 +435,20 @@ def parse_natural_language_query(query: str) -> InquiryTarget:
     temporal_constraint = TemporalConstraint(
         scope=temporal_scope, anchor_year=anchor_year, raw_expression=raw_expression
     )
+
+    # Explicit Clinic Routing
+    if _matches_any(
+        query_lower,
+        {
+            "clinic",
+            "hospital",
+            "facility",
+            "practice",
+            "health center",
+            "medical center",
+        },
+    ):
+        add_d(["clinical_documents", "reports"])
 
     # Stage 5: RoutingMode & Clarification Determination
     clarification_required = False

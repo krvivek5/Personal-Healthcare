@@ -1,6 +1,7 @@
 import logging
 import re
 import uuid
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date
 from typing import Any, Optional
@@ -12,6 +13,17 @@ from app.health.retrieval import RetrievalResult, RetrievedPassage
 from app.schemas.inquiry import EvidenceStatus, InquiryTarget
 
 logger = logging.getLogger(__name__)
+
+HUMAN_ATTRIBUTE_LABELS: dict[str, str] = {
+    "physician_name": "physician name",
+    "dosage": "dosage",
+    "clinic": "clinic or facility name",
+    "consultation_notes": "consultation notes or doctor recommendations",
+    "contact_number": "contact phone number",
+    "frequency": "medication frequency",
+    "status": "status",
+    "blood_group": "blood group",
+}
 
 
 class EvidenceResult(BaseModel):
@@ -358,6 +370,168 @@ def _keyword_present(keyword: str, text_lower: str) -> bool:
     return bool(re.search(pattern, text_lower))
 
 
+def _evaluate_attribute_lexicon(attr: str, text: str) -> bool:
+    """Evaluate unstructured passage text against the S3 contextual lexicon."""
+    text = text.lower()
+
+    if attr == "physician_name":
+        p1 = (
+            r"\b(prescribing (?:doctor|physician)|attending (?:physician|doctor)|"
+            r"prescribed by|ordered by|signed by|physician|provider|prescriber)\s*:\s*"
+            r"(?:(?:dr\.?\s+|doctor\s+)[a-z]+(?:\s+[a-z]+){0,2}|"
+            r"[a-z]+(?:\s+[a-z]+){0,2},\s*(?:m\.?d\.?|d\.?o\.?|n\.?p\.?|p\.?a\.?-c)|"
+            r"(?!follow\s*up\b|patient\s*seen\b|recommended\b|advised\b|see\s*below\b|"
+            r"none\b|n\/?a\b|pending\b|refill\b)[a-z]+(?:\s+[a-z]+){0,2}"
+            r"(?:,\s*(?:m\.?d\.?|d\.?o\.?|n\.?p\.?|p\.?a\.?-c))?)\b"
+        )
+        p2 = (
+            r"\b(?:dr\.?|doctor)\s+(?!advised\b|recommended\b|instructed\b|noted\b)"
+            r"[a-z]+(?:\s+[a-z]+){0,2}\b"
+        )
+        p3 = (
+            r"\b[a-z]+(?:\s+[a-z]+){1,2},\s*(?:m\.?d\.?|d\.?o\.?|n\.?p\.?|p\.?a\.?-c)\b"
+        )
+        return bool(re.search(p1, text) or re.search(p2, text) or re.search(p3, text))
+
+    elif attr == "dosage":
+        p1 = (
+            r"\b(dose|dosage|strength)\s*:\s*\d+(?:\.\d+)?\s*"
+            r"(?:mg|mcg|micrograms?|milligrams?|g|grams?|ml|milliliters?|units?)"
+            r"(?:\s+(?:once daily|twice daily|daily|bid|tid|qid|"
+            r"at bedtime|every \d+ hours?|q\d+h))?\b"
+        )
+        p2 = (
+            r"\btake\s+\d+(?:\.\d+)?\s*(?:tablet|tablets|capsule|capsules|pill|pills)?\s*"
+            r"(?:\(\s*\d+(?:\.\d+)?\s*(?:mg|mcg|g|ml)\s*\))?\s*(?:by mouth\s*)?"
+            r"(?:once daily|twice daily|daily|bid|tid|qid|at bedtime|"
+            r"every \d+ hours?|q\d+h)?\b"
+        )
+        p3 = (
+            r"\b\d+(?:\.\d+)?\s*"
+            r"(?:mg|mcg|micrograms?|milligrams?|g|grams?|ml|milliliters?|units?)\s+"
+            r"(?:once daily|twice daily|three times (?:a|per) day|"
+            r"four times (?:a|per) day|daily|bid|tid|qid|"
+            r"at bedtime|in the morning|every other day|"
+            r"every \d+ hours?|q\d+h|by mouth|orally|po|prn|as needed)\b"
+        )
+        p4 = (
+            r"\b(?:tablet|tablets|capsule|capsules|pill|pills)\s*\(\s*\d+(?:\.\d+)?\s*"
+            r"(?:mg|mcg|g|ml)\s*\)\b"
+        )
+        p5 = (
+            r"\b\d+(?:\.\d+)?\s*(?:mg|mcg|g|ml)\s+(?:tablet|tablets|capsule|capsules|pill|pills)\s+"
+            r"(?:once daily|twice daily|daily|bid|tid|qid|at bedtime|by mouth|po)\b"
+        )
+        return bool(
+            re.search(p1, text)
+            or re.search(p2, text)
+            or re.search(p3, text)
+            or re.search(p4, text)
+            or re.search(p5, text)
+        )
+
+    elif attr == "clinic":
+        p1 = (
+            r"\b(clinic|facility|hospital|location|practice)\s*:\s*"
+            r"(?!none\b|n\/?a\b|see\s*below\b|pending\b)[a-z0-9]+(?:\s+[a-z0-9]+){0,4}\b"
+        )
+        p2 = (
+            r"\b[a-z0-9]+(?:\s+[a-z0-9]+){0,2}\s+"
+            r"(?!the\b|this\b|that\b|a\b|an\b|my\b|our\b|your\b|local\b|any\b|each\b"
+            r"|another\b|at\b|to\b|in\b|from\b)"
+            r"[a-z0-9]+\s+(?:medical center|health center|hospital|clinic|infirmary"
+            r"|family practice|health system|institute)\b"
+        )
+        p3 = (
+            r"\b(seen at|visited|admitted to|discharged from|treated at|referred to"
+            r"|return to)\s+"
+            r"(?!(?:the|this|that|a|an|our|your|local|another|each)\s+"
+            r"(?:clinic|hospital|facility|practice|infirmary)\b)"
+            r"(?:[a-z0-9]+(?:\s+[a-z0-9]+){0,3}\s+)?"
+            r"(?:medical center|health center|hospital|clinic|infirmary"
+            r"|family practice|health system|institute)\b"
+        )
+        return bool(re.search(p1, text) or re.search(p2, text) or re.search(p3, text))
+
+    elif attr == "consultation_notes":
+        p1 = (
+            r"\b(assessment\s*(and|&)\s*plan|assessment|plan|impression|"
+            r"recommendations?|discharge instructions?"
+            r"|clinical advice|advice|doctor'?s? notes?|consultation notes?|"
+            r"notes?|conclusion)\s*:"
+        )
+        p2 = (
+            r"\b(doctor|physician|clinician)\s+(advised|recommended|instructed|noted)\b"
+        )
+        return bool(re.search(p1, text) or re.search(p2, text))
+
+    elif attr == "contact_number":
+        p1 = (
+            r"\b(phone|tel|telephone|cell|mobile|office|clinic phone|contact|fax)\s*"
+            r"(#|no\.?|number)?\s*:\s*"
+            r"(?:\+?\d{1,4}[-.\s]*)?(?:\(?\d{1,5}\)?[-.\s]*)?\d{2,5}[-.\s]?\d{2,5}"
+            r"(?:[-.\s]?\d{1,5})?\b"
+        )
+        p2 = (
+            r"\b(call|contact|reach(?: out)?)(?:\s+us)?\s+at\s+"
+            r"(?:\+?\d{1,4}[-.\s]*)?(?:\(?\d{1,5}\)?[-.\s]*)?\d{2,5}[-.\s]?\d{2,5}(?:[-.\s]?\d{1,5})?\b"
+        )
+        matches = list(re.finditer(p1, text)) + list(re.finditer(p2, text))
+        for match in matches:
+            matched_str = match.group(0)
+            number_part = matched_str
+            if ":" in matched_str:
+                number_part = matched_str.split(":", 1)[1]
+            elif " at " in matched_str:
+                number_part = matched_str.split(" at ", 1)[1]
+            digits = re.sub(r"[-.()\s+]", "", number_part)
+            if 7 <= len(digits) <= 15:
+                return True
+        return False
+
+    elif attr == "frequency":
+        p1 = (
+            r"\b(once(?: a| per)? day|twice(?: a| per)? day|three times (?:a|per) day|"
+            r"four times (?:a|per) day|every \d+ hours?|q\d+h|bid|tid|qid|daily|"
+            r"at bedtime|in the morning|every other day|as needed|prn)\b"
+        )
+        p2 = r"\b(frequency|schedule)\s*:\s*[a-z0-9]"
+        return bool(re.search(p1, text) or re.search(p2, text))
+
+    elif attr == "status":
+        p1 = (
+            r"\b(active medication|discontinued|condition(?: is)? resolved|inactive|"
+            r"current medication|stopped taking|completed course)\b"
+        )
+        p2 = (
+            r"\b(status|condition)\s*:\s*"
+            r"(active|current|resolved|chronic|discontinued|inactive)\b"
+        )
+        return bool(re.search(p1, text) or re.search(p2, text))
+
+    elif attr == "blood_group":
+        p1 = (
+            r"\b(blood (group|type)|abo\/?rh)\s*:\s*"
+            r"(a|b|ab|o)\s*(\+|-|pos|neg|positive|negative)?\b"
+        )
+        p2 = r"\bblood (group|type)\s+(a|b|ab|o)\s*(positive|negative|pos|neg|\+|-)?\b"
+        p3 = r"\btype\s+(a|b|ab|o)\s*(positive|negative|pos|neg|\+|-)\b"
+        p4 = r"\b(a|b|ab|o)[\+\-](?!\w)"
+        p5 = (
+            r"(?<!\bgrade\s)(?<!\bhepatitis\s)\b(a|b|ab|o)\s+"
+            r"(positive|negative|pos|neg)\b"
+        )
+        return bool(
+            re.search(p1, text)
+            or re.search(p2, text)
+            or re.search(p3, text)
+            or re.search(p4, text)
+            or re.search(p5, text)
+        )
+
+    return _keyword_present(attr.lower(), text)
+
+
 def _absent_directive(terms: list[str], document_date: Optional[date]) -> str:
     """Produce a safe-absence directive that describes what was NOT found in
     the document — without making any diagnostic inference.
@@ -495,23 +669,84 @@ def evaluate_passage_evidence(
         )
 
     # ------------------------------------------------------------------
-    # Rule A: requested_attributes non-empty — pool across all passages.
+    # Joint Entity + Attribute evaluation
     # ------------------------------------------------------------------
-    if target.requested_attributes:
-        matched_fields: set[str] = set()
-        # Track which passages contributed at least one match.
-        qualifying_passages_a: list[RetrievedPassage] = []
+    entity_lower = target.target_entity.lower() if target.target_entity else None
 
+    docs_with_entity = set()
+    if entity_lower:
         for p in retrieval_result.passages:
-            passage_contributed = False
-            for attr in target.requested_attributes:
-                if _keyword_present(attr.lower(), p.chunk_text.lower()):
-                    matched_fields.add(attr)
-                    passage_contributed = True
-            if passage_contributed:
-                qualifying_passages_a.append(p)
+            if _keyword_present(entity_lower, p.chunk_text.lower()):
+                docs_with_entity.add(p.document_id)
 
-        # Deterministic ordering: preserve target.requested_attributes order.
+        if not docs_with_entity:
+            # Rule D: Entity absent from all passages
+            return EvidenceResult(
+                status=EvidenceStatus.INSUFFICIENT,
+                evidence_directive=_absent_records_directive([target.target_entity]),
+            )
+
+    if target.requested_attributes:
+        best_doc_matched_fields: set[str] = set()
+        best_doc_qualifying_passages: list[RetrievedPassage] = []
+        pooled_matched_fields: set[str] = set()
+        pooled_qualifying_passages: list[RetrievedPassage] = []
+
+        docs_passages = defaultdict(list)
+        for p in retrieval_result.passages:
+            docs_passages[p.document_id].append(p)
+
+        for doc_id, passages in docs_passages.items():
+            if entity_lower and doc_id not in docs_with_entity:
+                continue
+
+            doc_matched_fields = set()
+            entity_passages = []
+            if entity_lower:
+                for p in passages:
+                    if _keyword_present(entity_lower, p.chunk_text.lower()):
+                        entity_passages.append(p)
+
+            attr_passages = []
+            for attr in target.requested_attributes:
+                for p in passages:
+                    if _evaluate_attribute_lexicon(attr, p.chunk_text):
+                        doc_matched_fields.add(attr)
+                        attr_passages.append(p)
+
+            # For target_entity queries, we find the single best document
+            is_better = len(doc_matched_fields) > len(best_doc_matched_fields)
+            if not is_better and (
+                len(doc_matched_fields) == len(best_doc_matched_fields)
+            ):
+                if not best_doc_qualifying_passages:
+                    is_better = True
+
+            if is_better:
+                best_doc_matched_fields = doc_matched_fields
+                unique_passages = {
+                    p.chunk_id: p for p in (entity_passages + attr_passages)
+                }
+                best_doc_qualifying_passages = list(unique_passages.values())
+
+            # For attribute-only queries, we pool across all documents
+            if attr_passages or entity_passages:
+                pooled_matched_fields.update(doc_matched_fields)
+                unique_passages = {
+                    p.chunk_id: p for p in (entity_passages + attr_passages)
+                }
+                pooled_qualifying_passages.extend(unique_passages.values())
+
+        if entity_lower:
+            matched_fields = best_doc_matched_fields
+            qualifying_passages = best_doc_qualifying_passages
+        else:
+            matched_fields = pooled_matched_fields
+            # Deduplicate qualifying_passages globally for pooled
+            qualifying_passages = list(
+                {p.chunk_id: p for p in pooled_qualifying_passages}.values()
+            )
+
         missing_fields_list = [
             a for a in target.requested_attributes if a not in matched_fields
         ]
@@ -519,55 +754,72 @@ def evaluate_passage_evidence(
             a for a in target.requested_attributes if a in matched_fields
         ]
 
+        human_missing_fields = [
+            HUMAN_ATTRIBUTE_LABELS.get(a, a) for a in missing_fields_list
+        ]
+        human_missing_str = ", ".join(human_missing_fields)
+
         if not matched_fields:
-            # Zero attributes corroborated across all passages.
+            if entity_lower:
+                return EvidenceResult(
+                    status=EvidenceStatus.PARTIALLY_SUFFICIENT,
+                    missing_fields=missing_fields_list,
+                    evidence_directive=(
+                        f"{target.target_entity} is recorded, but not found "
+                        f"in records: {human_missing_str}."
+                    ),
+                    qualified_passages=qualifying_passages,
+                )
             return EvidenceResult(
                 status=EvidenceStatus.INSUFFICIENT,
-                missing_fields=list(target.requested_attributes),
-                evidence_directive=_absent_records_directive(
-                    list(target.requested_attributes)
-                ),
+                missing_fields=missing_fields_list,
+                evidence_directive=_absent_records_directive(human_missing_fields),
             )
         elif missing_fields_list:
-            # Some corroborated, some missing.
+            if entity_lower:
+                directive = (
+                    f"{target.target_entity} is recorded, but not found in records: "
+                    f"{human_missing_str}."
+                )
+            else:
+                directive = (
+                    f"Information partially found in your uploaded records. "
+                    f"Not found in records: {human_missing_str}."
+                )
+
             return EvidenceResult(
                 status=EvidenceStatus.PARTIALLY_SUFFICIENT,
                 matched_fields=matched_fields_list,
                 missing_fields=missing_fields_list,
-                evidence_directive=(
-                    f"Information partially found in your uploaded records. "
-                    f"Not found in records: {', '.join(missing_fields_list)}."
-                ),
-                qualified_passages=qualifying_passages_a,
+                evidence_directive=directive,
+                qualified_passages=qualifying_passages,
             )
         else:
-            # All requested attributes corroborated.
             return EvidenceResult(
                 status=EvidenceStatus.SUFFICIENT,
                 matched_fields=matched_fields_list,
                 evidence_directive=(
                     "All requested information was found in your uploaded records."
                 ),
-                qualified_passages=qualifying_passages_a,
+                qualified_passages=qualifying_passages,
             )
 
     # ------------------------------------------------------------------
     # Rule B: entity only — no requested attributes.
     # ------------------------------------------------------------------
     if target.target_entity:
-        entity_lower = target.target_entity.lower()
-        qualifying_passages_b: list[RetrievedPassage] = [
+        qualifying_passages = [
             p
             for p in retrieval_result.passages
             if _keyword_present(entity_lower, p.chunk_text.lower())
         ]
-        if qualifying_passages_b:
+        if qualifying_passages:
             return EvidenceResult(
                 status=EvidenceStatus.SUFFICIENT,
                 evidence_directive=(
                     "All requested information was found in your uploaded records."
                 ),
-                qualified_passages=qualifying_passages_b,
+                qualified_passages=qualifying_passages,
             )
         return EvidenceResult(
             status=EvidenceStatus.INSUFFICIENT,

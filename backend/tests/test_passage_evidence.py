@@ -189,6 +189,18 @@ class TestRuleAAttributePooling:
         assert result.status == EvidenceStatus.SUFFICIENT
         assert len(result.matched_fields) == 5
 
+    def test_cross_document_fusion_allowed_for_attributes_only(self) -> None:
+        """Attributes from different documents ARE fused (no target_entity)."""
+        p1 = _passage("eGFR: 65 mL/min", document_id=_DOC_A)
+        p2 = _passage("Creatinine: 1.1 mg/dL", document_id=_DOC_B)
+
+        target = _target(attributes=["eGFR", "creatinine"])
+        result = evaluate_passage_evidence(target, _result([p1, p2]), PATIENT_A)
+
+        assert result.status == EvidenceStatus.SUFFICIENT
+        assert len(result.matched_fields) == 2
+        assert len(result.missing_fields) == 0
+
 
 # ---------------------------------------------------------------------------
 # Rule B — entity-only matching
@@ -232,6 +244,19 @@ class TestRuleBEntityOnly:
         result = evaluate_passage_evidence(target, _result([p]), PATIENT_A)
 
         assert result.status == EvidenceStatus.INSUFFICIENT
+
+    def test_entity_binding_per_document(self) -> None:
+        """Entity presence is required in the SAME document as the attributes."""
+        # DOC_A has entity but not attribute
+        p1 = _passage("Ejection fraction discussed.", document_id=_DOC_A)
+        # DOC_B has attribute but not entity
+        p2 = _passage("status: normal.", document_id=_DOC_B)
+
+        target = _target(entity="ejection fraction", attributes=["status"])
+        result = evaluate_passage_evidence(target, _result([p1, p2]), PATIENT_A)
+
+        assert result.status == EvidenceStatus.PARTIALLY_SUFFICIENT
+        assert "status" in result.missing_fields
 
 
 # ---------------------------------------------------------------------------
