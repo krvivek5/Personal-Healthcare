@@ -318,7 +318,8 @@ async def test_transitional_cross_domain_structured_preservation(
     mock_llm_synth,
 ):
     """
-    CROSS_DOMAIN routes via STRUCTURED path in S2, not calling retrieval.
+    CROSS_DOMAIN routes via dual-retrieval path in S4, calling both context
+    and retrieval.
     """
     mock_parse.return_value = InquiryTarget(
         candidate_structured_domains=["medications"],
@@ -334,7 +335,7 @@ async def test_transitional_cross_domain_structured_preservation(
     )
 
     assert response.status_code == 200
-    assert mock_retrieve.call_count == 0
     assert mock_build_context.call_count == 1
+    assert mock_retrieve.call_count == 1
     assert mock_eval_structured.call_count == 1
     assert mock_llm_synth.synthesize_response.call_count == 1

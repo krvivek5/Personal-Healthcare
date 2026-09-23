@@ -268,7 +268,19 @@ def build_sanitized_context(
         target.target_domain.lower() if (target and target.target_domain) else None
     )
 
-    if target_domain and target_domain in valid_domains:
+    if target and target.candidate_structured_domains:
+        if any(d.lower() == "all" for d in target.candidate_structured_domains):
+            included_domains = list(DOMAIN_ORDER)
+        else:
+            included_domains = ["profile"]
+            for domain in target.candidate_structured_domains:
+                domain_lower = domain.lower()
+                if (
+                    domain_lower in valid_domains
+                    and domain_lower not in included_domains
+                ):
+                    included_domains.append(domain_lower)
+    elif target_domain and target_domain in valid_domains:
         if target_domain == "profile":
             included_domains = ["profile"]
         else:

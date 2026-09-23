@@ -117,7 +117,16 @@ class MockLLMProvider:
         tokens: list[str] = []
         seen_ids: set[uuid.UUID] = set()
 
-        # M4 path: passage-based citations take priority.
+        # M5 S4 path: dual citations (structured and passage).
+        # 1. Structured records
+        for r in evidence.matched_records:
+            r_id = getattr(r, "id", None)
+            if isinstance(r_id, uuid.UUID) and r_id not in seen_ids:
+                citations.append(r_id)
+                tokens.append("")  # structured records have no [DOC-N] token
+                seen_ids.add(r_id)
+
+        # 2. Passage-based citations
         if context.passages:
             for i, p in enumerate(context.passages, start=1):
                 doc_id = p.document_id
@@ -126,15 +135,9 @@ class MockLLMProvider:
                     citations.append(doc_id)
                     tokens.append(token)
                     seen_ids.add(doc_id)
-        else:
-            # M3 path: structured records then whole-document citations.
-            for r in evidence.matched_records:
-                r_id = getattr(r, "id", None)
-                if isinstance(r_id, uuid.UUID) and r_id not in seen_ids:
-                    citations.append(r_id)
-                    tokens.append("")  # structured records have no [DOC-N] token
-                    seen_ids.add(r_id)
 
+        # 3. Whole-document citations (M3 fallback)
+        if not context.passages:
             for doc in context.documents:
                 if (
                     isinstance(doc.document_id, uuid.UUID)
@@ -149,7 +152,34 @@ class MockLLMProvider:
             answer_text = evidence.evidence_directive
         else:
             # Generate deterministic mock answer
-            if context.passages:
+            has_struct = bool(evidence.matched_records)
+            has_doc = bool(context.passages or context.documents)
+
+            if has_struct and has_doc:
+                doc_name = (
+                    context.passages[0].display_name
+                    if context.passages
+                    else context.documents[0].display_name
+                )
+                date_str = ""
+                if context.passages and context.passages[0].document_date:
+                    date_str = f" from {context.passages[0].document_date.isoformat()}"
+                elif context.documents and context.documents[0].document_date:
+                    date_str = f" from {context.documents[0].document_date.isoformat()}"
+
+                if target.target_entity:
+                    answer_text = (
+                        "According to structured records and your uploaded "
+                        f"{doc_name}{date_str}, "
+                        f"records confirm {target.target_entity}."
+                    )
+                else:
+                    answer_text = (
+                        "According to structured records and your uploaded "
+                        f"{doc_name}{date_str}, "
+                        "records confirm requested information."
+                    )
+            elif context.passages:
                 p0 = context.passages[0]
                 date_str = (
                     f" from {p0.document_date.isoformat()}" if p0.document_date else ""

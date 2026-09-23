@@ -240,20 +240,100 @@ async def submit_health_inquiry(
 
         sanitized_context = build_sanitized_context(context, target)
 
+    elif target.routing_mode == RoutingMode.CROSS_DOMAIN:
+        # ---------------------------------------------------------------
+        # CROSS_DOMAIN
+        # ---------------------------------------------------------------
+        from app.health.evidence_fusion import fuse_cross_domain_evidence
+
+        try:
+            context = await build_inquiry_context(
+                db,
+                patient.id,
+                domains=(
+                    target.candidate_structured_domains
+                    if target.candidate_structured_domains
+                    else None
+                ),
+            )
+            await db.commit()
+        except Exception as exc:
+            logger.error(
+                "Structured retrieval failure for patient %s: %s", patient.id, exc
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to retrieve structured evidence.",
+            )
+
+        try:
+            retrieval_result = await retrieve_document_passages(
+                db=db,
+                patient_id=patient.id,
+                query_text=request.query,
+                target_domains=target.candidate_document_domains,
+            )
+        except (RetrievalProviderError, RetrievalDatabaseError) as exc:
+            logger.error(
+                "Document retrieval failure for patient %s: %s", patient.id, exc
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to retrieve document evidence.",
+            )
+
+        struct_evidence = evaluate_evidence(target, context)
+        doc_evidence = evaluate_passage_evidence(target, retrieval_result, patient.id)
+
+        evidence = fuse_cross_domain_evidence(target, struct_evidence, doc_evidence)
+
+        if (
+            evidence.status != EvidenceStatus.INSUFFICIENT
+            and evidence.qualified_passages
+        ):
+            context.passages = [
+                PassageEvidenceContext(
+                    chunk_id=p.chunk_id,
+                    document_id=p.document_id,
+                    chunk_index=p.chunk_index,
+                    page_number=p.page_number,
+                    chunk_text=p.chunk_text,
+                    display_name=p.document_display_name,
+                    document_type=p.document_type,
+                    document_date=p.document_date,
+                    cosine_distance=p.cosine_distance,
+                    similarity=p.similarity,
+                )
+                for p in evidence.qualified_passages
+            ]
+
+        if evidence.status != EvidenceStatus.INSUFFICIENT:
+            sanitized_context = build_sanitized_context(context, target)
+
     else:
         # ---------------------------------------------------------------
-        # STRUCTURED_ONLY and CROSS_DOMAIN (Transitional Boundary)
+        # STRUCTURED_ONLY
         # ---------------------------------------------------------------
-        context = await build_inquiry_context(
-            db,
-            patient.id,
-            domains=(
-                target.candidate_structured_domains
-                if target.candidate_structured_domains
-                else None
-            ),
-        )
-        await db.commit()
+        try:
+            context = await build_inquiry_context(
+                db,
+                patient.id,
+                domains=(
+                    target.candidate_structured_domains
+                    if target.candidate_structured_domains
+                    else None
+                ),
+            )
+            await db.commit()
+        except Exception as exc:
+            logger.error(
+                "Structured retrieval failure for patient %s: %s", patient.id, exc
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to retrieve structured evidence.",
+            )
+
         evidence = evaluate_evidence(target, context)
 
     # 7. Short-circuit: insufficient evidence — no LLM call.
