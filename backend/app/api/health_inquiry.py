@@ -144,47 +144,73 @@ async def submit_health_inquiry(
     Submits a natural language query for processing against the patient's
     health records.
 
-    M4 S6 routing:
-      - Document domains (labs / reports / prescriptions / clinical_documents):
-        S4 retrieval → S5 passage evidence evaluation → LLM synthesis.
-      - Structured domains (conditions / medications / allergies / …):
-        Existing M3 relational evidence evaluation path (unchanged).
+    M5 S2 routing:
+      1. evaluate_safety
+      2. parse_natural_language_query (Ambiguous/Unroutable short-circuits)
+      3. get_or_create_patient
+      4. route by target.routing_mode (DOCUMENT_ONLY vs STRUCTURED_ONLY / CROSS_DOMAIN)
     """
-    # 1 & 2. Authenticate and Scope Patient
-    patient = await get_or_create_patient(db, current_user.id)
-
-    # 3. Deterministic Safety Evaluation — short-circuit before any DB work.
+    # 1. Deterministic Safety Evaluation — short-circuit before any DB work.
     safety_state = evaluate_safety(request.query)
+    if safety_state.triggered:
+        return HealthInquiryResponse(
+            query=request.query,
+            answer=safety_state.advisory_message or "SAFETY_ADVISORY",
+            evidence_status=EvidenceStatus.INSUFFICIENT,
+            citations=[],
+            safety=safety_state,
+            generated_at=datetime.now(timezone.utc),
+            clarification_required=False,
+        )
 
-    # 4. Assembly of Structured Context
-    context = await build_inquiry_context(db, patient.id)
+    # 2. Query Understanding & Ambiguity/Unroutable Short-Circuits
+    from app.schemas.inquiry import RoutingMode
 
-    # S4 retrieval_document_passages strictly requires the session to not be in an open
-    # transaction. The prior DB reads implicitly started a transaction, so we commit
-    # it here.
-    await db.commit()
-
-    # 5. Query Understanding
     target = parse_natural_language_query(request.query)
 
-    # 6. Server-Owned Evidence Evaluation
-    target_domain = (
-        target.target_domain.lower() if target and target.target_domain else ""
-    )
+    if target.routing_mode == RoutingMode.AMBIGUOUS_CLARIFY:
+        return HealthInquiryResponse(
+            query=request.query,
+            answer=target.clarification_prompt or "Please clarify your request.",
+            evidence_status=EvidenceStatus.INSUFFICIENT,
+            citations=[],
+            safety=safety_state,
+            generated_at=datetime.now(timezone.utc),
+            clarification_required=True,
+        )
 
-    # Initialise sanitized_context to None; built after passage population.
+    if target.routing_mode == RoutingMode.UNROUTABLE:
+        return HealthInquiryResponse(
+            query=request.query,
+            answer="Your query could not be matched to medical records.",
+            evidence_status=EvidenceStatus.INSUFFICIENT,
+            citations=[],
+            safety=safety_state,
+            generated_at=datetime.now(timezone.utc),
+            clarification_required=False,
+        )
+
+    # 3. Authenticate and Scope Patient
+    patient = await get_or_create_patient(db, current_user.id)
+
     sanitized_context = None
 
-    if not safety_state.triggered and target_domain in DOCUMENT_DOMAINS:
+    # 4 & 5 & 6. Route using target.routing_mode
+    if target.routing_mode == RoutingMode.DOCUMENT_ONLY:
         # ---------------------------------------------------------------
-        # M4 passage-based path (S4 retrieval → S5 qualification → S6)
+        # DOCUMENT_ONLY path
         # ---------------------------------------------------------------
+        # Instantiate empty context
+        context = StructuredHealthContext()
+        # Close read transaction before vector engine begins
+        await db.commit()
+
         try:
             retrieval_result = await retrieve_document_passages(
                 db=db,
                 patient_id=patient.id,
                 query_text=request.query,
-                target_domains=[target_domain],
+                target_domains=target.candidate_document_domains,
             )
         except (RetrievalProviderError, RetrievalDatabaseError) as exc:
             logger.error("Retrieval failure for patient %s: %s", patient.id, exc)
@@ -193,10 +219,8 @@ async def submit_health_inquiry(
                 detail="Failed to retrieve document evidence.",
             )
 
-        # S5 qualification — S6 must NOT re-run _keyword_present.
         evidence = evaluate_passage_evidence(target, retrieval_result, patient.id)
 
-        # Map S5-qualified passages directly into context without re-filtering.
         if evidence.qualified_passages:
             context.passages = [
                 PassageEvidenceContext(
@@ -214,17 +238,26 @@ async def submit_health_inquiry(
                 for p in evidence.qualified_passages
             ]
 
-        # Build sanitized context (includes passage_map for citation enrichment).
         sanitized_context = build_sanitized_context(context, target)
 
     else:
         # ---------------------------------------------------------------
-        # M3 structured relational path (unchanged)
+        # STRUCTURED_ONLY and CROSS_DOMAIN (Transitional Boundary)
         # ---------------------------------------------------------------
+        context = await build_inquiry_context(
+            db,
+            patient.id,
+            domains=(
+                target.candidate_structured_domains
+                if target.candidate_structured_domains
+                else None
+            ),
+        )
+        await db.commit()
         evidence = evaluate_evidence(target, context)
 
     # 7. Short-circuit: insufficient evidence — no LLM call.
-    if evidence.status == EvidenceStatus.INSUFFICIENT and not safety_state.triggered:
+    if evidence.status == EvidenceStatus.INSUFFICIENT:
         return HealthInquiryResponse(
             query=request.query,
             answer=evidence.evidence_directive,
@@ -232,9 +265,10 @@ async def submit_health_inquiry(
             citations=[],
             safety=safety_state,
             generated_at=datetime.now(timezone.utc),
+            clarification_required=False,
         )
 
-    # 8. LLM Response Synthesis — safety short-circuit is handled by LLMGateway.
+    # 8. LLM Response Synthesis
     try:
         synthesis_result = await llm.synthesize_response(
             query=request.query,
@@ -254,7 +288,6 @@ async def submit_health_inquiry(
     verified_citations: list[InquiryCitation] = []
     citation_id_counter = 1
 
-    # Validate length invariant before iterating.
     if len(synthesis_result.cited_tokens) != len(synthesis_result.cited_record_ids):
         logger.error(
             "cited_tokens / cited_record_ids length mismatch (%d vs %d) — "
@@ -272,24 +305,20 @@ async def submit_health_inquiry(
     for rid, token in zip(
         synthesis_result.cited_record_ids, synthesis_result.cited_tokens
     ):
-        # For passage-backed citations, deduplicate by token:
         if token:
             if token in seen_tokens:
                 continue
             seen_tokens.add(token)
         else:
-            # For structured-domain citations without tokens, deduplicate by record_id:
             if rid in seen_structured_ids:
                 continue
             seen_structured_ids.add(rid)
 
-        # Reject foreign / hallucinated UUIDs.
         if rid not in record_map:
             continue
 
         entity_type, label, verif_state = record_map[rid]
 
-        # M4 passage enrichment: look up chunk-level metadata via passage_map.
         chunk_id: uuid.UUID | None = None
         page_number: int | None = None
         passage_text: str | None = None
@@ -300,8 +329,6 @@ async def submit_health_inquiry(
                 chunk_id = provenance.chunk_id
                 page_number = provenance.page_number
                 passage_text = provenance.passage_text
-            # If token is valid but absent from passage_map: no passage enrichment
-            # (chunk_id / page_number / passage_text remain None).
 
         verified_citations.append(
             InquiryCitation(
@@ -325,4 +352,5 @@ async def submit_health_inquiry(
         citations=verified_citations,
         safety=safety_state,
         generated_at=datetime.now(timezone.utc),
+        clarification_required=False,
     )

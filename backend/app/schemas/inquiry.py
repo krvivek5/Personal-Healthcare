@@ -191,3 +191,4 @@ class HealthInquiryResponse(BaseModel):
     citations: list[InquiryCitation]
     safety: SafetyGuardrailState
     generated_at: datetime
+    clarification_required: bool = False

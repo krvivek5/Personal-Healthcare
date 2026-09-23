@@ -1,6 +1,6 @@
 import uuid
 from datetime import date
-from typing import Optional
+from typing import Optional, Sequence
 
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -89,39 +89,58 @@ class StructuredHealthContext(BaseModel):
 
 
 async def build_inquiry_context(
-    db: AsyncSession, patient_id: uuid.UUID
+    db: AsyncSession,
+    patient_id: uuid.UUID,
+    domains: Optional[Sequence[str]] = None,
 ) -> StructuredHealthContext:
     """
     Creates a backend service that takes an authenticated patient_id,
     reads the existing Phase 1 structured health data,
     and produces the canonical in-memory context representation.
     """
+    profile = None
+    conditions = []
+    medications = []
+    allergies = []
+    symptoms = []
+    goals = []
+    timeline_events = []
+
     # 1. Fetch Profile
-    profile_db = await get_health_profile(db, patient_id)
-    profile = HealthProfileResponse.model_validate(profile_db) if profile_db else None
+    if domains is None or "profile" in domains:
+        profile_db = await get_health_profile(db, patient_id)
+        profile = (
+            HealthProfileResponse.model_validate(profile_db) if profile_db else None
+        )
 
     # 2. Fetch Conditions
-    conditions_db = await get_conditions(db, patient_id)
-    conditions = [ConditionResponse.model_validate(c) for c in conditions_db]
+    if domains is None or "conditions" in domains:
+        conditions_db = await get_conditions(db, patient_id)
+        conditions = [ConditionResponse.model_validate(c) for c in conditions_db]
 
     # 3. Fetch Medications
-    medications_db = await get_medications(db, patient_id)
-    medications = [MedicationResponse.model_validate(m) for m in medications_db]
+    if domains is None or "medications" in domains:
+        medications_db = await get_medications(db, patient_id)
+        medications = [MedicationResponse.model_validate(m) for m in medications_db]
 
     # 4. Fetch Allergies
-    allergies_db = await get_allergies(db, patient_id)
-    allergies = [AllergyResponse.model_validate(a) for a in allergies_db]
+    if domains is None or "allergies" in domains:
+        allergies_db = await get_allergies(db, patient_id)
+        allergies = [AllergyResponse.model_validate(a) for a in allergies_db]
 
     # 5. Fetch Symptoms
-    symptoms_db = await get_symptoms(db, patient_id)
-    symptoms = [SymptomResponse.model_validate(s) for s in symptoms_db]
+    if domains is None or "symptoms" in domains:
+        symptoms_db = await get_symptoms(db, patient_id)
+        symptoms = [SymptomResponse.model_validate(s) for s in symptoms_db]
 
     # 6. Fetch Goals
-    goals_db = await get_goals(db, patient_id)
-    goals = [GoalResponse.model_validate(g) for g in goals_db]
+    if domains is None or "goals" in domains:
+        goals_db = await get_goals(db, patient_id)
+        goals = [GoalResponse.model_validate(g) for g in goals_db]
 
     # 7. Fetch Timeline
-    timeline_events = await get_timeline(db, patient_id)
+    if domains is None:
+        timeline_events = await get_timeline(db, patient_id)
 
     return StructuredHealthContext(
         profile=profile,
