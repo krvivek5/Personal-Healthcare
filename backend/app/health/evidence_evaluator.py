@@ -3,7 +3,7 @@ import re
 import uuid
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from typing import Any, Optional
 
 from pydantic import BaseModel, Field
@@ -133,6 +133,55 @@ def evaluate_evidence(
                         "Historical records for this entity are not recorded."
                     ),
                 )
+        elif target.temporal_scope == "interval" and target.temporal_constraint:
+            constraint = target.temporal_constraint
+            if constraint.start_date and constraint.end_date:
+                filtered = []
+                for r in records:
+                    if domain == "allergies":
+                        time_phrase = (
+                            constraint.raw_expression or "the requested time period"
+                        )
+                        entity_name = target.target_entity or "this substance"
+                        return EvidenceResult(
+                            status=EvidenceStatus.INSUFFICIENT,
+                            evidence_directive=(
+                                f"An allergy to {entity_name} is on record, "
+                                f"but its presence during {time_phrase} is unverified."
+                            ),
+                        )
+
+                    started_at = getattr(r, "started_at", None)
+                    if not started_at:
+                        continue
+
+                    if isinstance(started_at, datetime):
+                        started_at = started_at.date()
+
+                    ended_at = getattr(r, "ended_at", None)
+                    if isinstance(ended_at, datetime):
+                        ended_at = ended_at.date()
+
+                    if started_at <= constraint.end_date:
+                        if ended_at and ended_at >= constraint.start_date:
+                            filtered.append(r)
+                        elif ended_at is None:
+                            if domain == "symptoms":
+                                filtered.append(r)
+                            else:
+                                status = getattr(r, "status", None)
+                                if status in ("active", "current"):
+                                    filtered.append(r)
+
+                records = filtered
+                if not records:
+                    time_phrase = (
+                        constraint.raw_expression or "the requested time period"
+                    )
+                    return EvidenceResult(
+                        status=EvidenceStatus.INSUFFICIENT,
+                        evidence_directive=(f"No records found for {time_phrase}."),
+                    )
     else:
         # Single record (e.g., profile)
         if not records_data:
@@ -650,16 +699,46 @@ def evaluate_passage_evidence(
             )
 
     # ------------------------------------------------------------------
-    # 2. Empty retrieval result gate.
+    # 2. Temporal defense-in-depth and Empty retrieval result gate.
     # ------------------------------------------------------------------
-    if retrieval_result.is_empty:
-        if target.requested_attributes:
-            missing = list(target.requested_attributes)
-            directive = _absent_records_directive(missing)
-        elif target.target_entity:
-            directive = _absent_records_directive([target.target_entity])
+    passages_to_evaluate = []
+    if (
+        target.temporal_scope == "interval"
+        and target.temporal_constraint
+        and target.temporal_constraint.start_date
+        and target.temporal_constraint.end_date
+    ):
+        start_date = target.temporal_constraint.start_date
+        end_date = target.temporal_constraint.end_date
+        for p in retrieval_result.passages:
+            if p.document_date and start_date <= p.document_date <= end_date:
+                passages_to_evaluate.append(p)
+    else:
+        passages_to_evaluate = list(retrieval_result.passages)
+
+    if not passages_to_evaluate:
+        if target.temporal_scope == "interval" and target.temporal_constraint:
+            time_phrase = (
+                target.temporal_constraint.raw_expression or "the requested time period"
+            )
+            directive = f"No document records are available for {time_phrase}."
+            if target.requested_attributes:
+                missing = list(target.requested_attributes)
+                directive = _absent_records_directive(missing) + f" (for {time_phrase})"
+            elif target.target_entity:
+                directive = (
+                    _absent_records_directive([target.target_entity])
+                    + f" (for {time_phrase})"
+                )
         else:
-            directive = "No document records are available for this domain."
+            if target.requested_attributes:
+                missing = list(target.requested_attributes)
+                directive = _absent_records_directive(missing)
+            elif target.target_entity:
+                directive = _absent_records_directive([target.target_entity])
+            else:
+                directive = "No document records are available for this domain."
+
         return EvidenceResult(
             status=EvidenceStatus.INSUFFICIENT,
             missing_fields=list(target.requested_attributes)
@@ -675,7 +754,7 @@ def evaluate_passage_evidence(
 
     docs_with_entity = set()
     if entity_lower:
-        for p in retrieval_result.passages:
+        for p in passages_to_evaluate:
             if _keyword_present(entity_lower, p.chunk_text.lower()):
                 docs_with_entity.add(p.document_id)
 
@@ -693,7 +772,7 @@ def evaluate_passage_evidence(
         pooled_qualifying_passages: list[RetrievedPassage] = []
 
         docs_passages = defaultdict(list)
-        for p in retrieval_result.passages:
+        for p in passages_to_evaluate:
             docs_passages[p.document_id].append(p)
 
         for doc_id, passages in docs_passages.items():
@@ -810,7 +889,7 @@ def evaluate_passage_evidence(
     if target.target_entity:
         qualifying_passages = [
             p
-            for p in retrieval_result.passages
+            for p in passages_to_evaluate
             if _keyword_present(entity_lower, p.chunk_text.lower())
         ]
         if qualifying_passages:
@@ -833,5 +912,5 @@ def evaluate_passage_evidence(
     return EvidenceResult(
         status=EvidenceStatus.SUFFICIENT,
         evidence_directive="Document content is available.",
-        qualified_passages=list(retrieval_result.passages),
+        qualified_passages=passages_to_evaluate,
     )

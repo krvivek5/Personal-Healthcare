@@ -1,7 +1,7 @@
 import logging
 import uuid
 from datetime import datetime, timezone
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -33,6 +33,7 @@ from app.schemas.inquiry import (
     HealthInquiryRequest,
     HealthInquiryResponse,
     InquiryCitation,
+    TemporalScope,
 )
 from app.schemas.provenance import VerificationState
 
@@ -205,12 +206,23 @@ async def submit_health_inquiry(
         # Close read transaction before vector engine begins
         await db.commit()
 
+        temporal_kwargs: dict[str, Any] = {}
+        if (
+            target.temporal_scope in ("interval", TemporalScope.INTERVAL)
+            and target.temporal_constraint
+        ):
+            if target.temporal_constraint.start_date is not None:
+                temporal_kwargs["start_date"] = target.temporal_constraint.start_date
+            if target.temporal_constraint.end_date is not None:
+                temporal_kwargs["end_date"] = target.temporal_constraint.end_date
+
         try:
             retrieval_result = await retrieve_document_passages(
                 db=db,
                 patient_id=patient.id,
                 query_text=request.query,
                 target_domains=target.candidate_document_domains,
+                **temporal_kwargs,
             )
         except (RetrievalProviderError, RetrievalDatabaseError) as exc:
             logger.error("Retrieval failure for patient %s: %s", patient.id, exc)
@@ -266,12 +278,23 @@ async def submit_health_inquiry(
                 detail="Failed to retrieve structured evidence.",
             )
 
+        temporal_kwargs: dict[str, Any] = {}
+        if (
+            target.temporal_scope in ("interval", TemporalScope.INTERVAL)
+            and target.temporal_constraint
+        ):
+            if target.temporal_constraint.start_date is not None:
+                temporal_kwargs["start_date"] = target.temporal_constraint.start_date
+            if target.temporal_constraint.end_date is not None:
+                temporal_kwargs["end_date"] = target.temporal_constraint.end_date
+
         try:
             retrieval_result = await retrieve_document_passages(
                 db=db,
                 patient_id=patient.id,
                 query_text=request.query,
                 target_domains=target.candidate_document_domains,
+                **temporal_kwargs,
             )
         except (RetrievalProviderError, RetrievalDatabaseError) as exc:
             logger.error(

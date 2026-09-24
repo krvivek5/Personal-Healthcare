@@ -28,7 +28,7 @@ import re
 import uuid
 from dataclasses import dataclass
 from datetime import date
-from typing import Optional, Sequence
+from typing import Any, Optional, Sequence
 
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import SQLAlchemyError
@@ -234,6 +234,8 @@ async def retrieve_document_passages(
     query_text: str,
     target_domains: Sequence[str],
     *,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
     top_k: Optional[int] = None,
     provider: Optional[EmbeddingProvider] = None,
     settings: Optional[Settings] = None,
@@ -358,6 +360,23 @@ async def retrieve_document_passages(
             # Compound ORDER BY in a single query forces a Seq Scan + Sort.
             # All eligibility filters are enforced inside PostgreSQL (section 8.1).
             # ----------------------------------------------------------------
+            where_clauses = [
+                DocumentChunk.patient_id == patient_id,
+                MedicalDocument.patient_id == patient_id,
+                MedicalDocument.document_type.in_(target_document_types),
+                DocumentExtraction.extraction_status == "COMPLETED",
+                DocumentExtraction.extracted_text.is_not(None),
+                func.length(func.trim(DocumentExtraction.extracted_text)) > 0,
+                DocumentChunk.embedding.is_not(None),
+                func.length(func.trim(DocumentChunk.chunk_text)) > 0,
+            ]
+
+            if start_date is not None and end_date is not None:
+                where_clauses.append(MedicalDocument.document_date.is_not(None))
+                where_clauses.append(
+                    MedicalDocument.document_date.between(start_date, end_date)
+                )
+
             subquery = (
                 select(
                     DocumentChunk.id.label("chunk_id"),
@@ -383,20 +402,7 @@ async def retrieve_document_passages(
                     (MedicalDocument.id == DocumentExtraction.document_id)
                     & (MedicalDocument.patient_id == DocumentExtraction.patient_id),
                 )
-                .where(
-                    # Hard tenant boundary enforced at both predicate AND join.
-                    DocumentChunk.patient_id == patient_id,
-                    MedicalDocument.patient_id == patient_id,
-                    # Domain constraint.
-                    MedicalDocument.document_type.in_(target_document_types),
-                    # Extraction eligibility.
-                    DocumentExtraction.extraction_status == "COMPLETED",
-                    DocumentExtraction.extracted_text.is_not(None),
-                    func.length(func.trim(DocumentExtraction.extracted_text)) > 0,
-                    # Embedding and passage integrity.
-                    DocumentChunk.embedding.is_not(None),
-                    func.length(func.trim(DocumentChunk.chunk_text)) > 0,
-                )
+                .where(*where_clauses)
                 # Stage 1: distance-only -> HNSW index scan is used.
                 .order_by(DocumentChunk.embedding.cosine_distance(query_vector).asc())
                 .limit(effective_top_k)
@@ -505,6 +511,8 @@ class HybridRetrievalEngine:
         query_text: str,
         target_domains: Sequence[str],
         *,
+        start_date: Optional[date] = None,
+        end_date: Optional[date] = None,
         top_k: Optional[int] = None,
     ) -> RetrievalResult:
         """Retrieve top-K relevant document passages for patient_id.
@@ -512,6 +520,11 @@ class HybridRetrievalEngine:
         Thin delegation to :func:`retrieve_document_passages`.  All invariants
         from that function apply here without exception.
         """
+        kwargs: dict[str, Any] = {}
+        if start_date is not None:
+            kwargs["start_date"] = start_date
+        if end_date is not None:
+            kwargs["end_date"] = end_date
         return await retrieve_document_passages(
             db=db,
             patient_id=patient_id,
@@ -520,4 +533,5 @@ class HybridRetrievalEngine:
             top_k=top_k,
             provider=self._provider,
             settings=self._settings,
+            **kwargs,
         )

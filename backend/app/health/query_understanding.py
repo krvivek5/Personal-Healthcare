@@ -1,5 +1,6 @@
+import calendar
 import re
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 
 from app.schemas.inquiry import (
     InquiryTarget,
@@ -231,6 +232,9 @@ def _extract_entity(query_lower: str) -> str | None:
 
 
 CONVERSATIONAL_VAGUE_ANCHORS = {
+    "recently",
+    "lately",
+    "a while ago",
     "how am i doing",
     "tell me something useful",
     "what should i know",
@@ -390,50 +394,160 @@ def parse_natural_language_query(query: str) -> InquiryTarget:
 
     # Stage 4: Temporal Constraints
     temporal_scope = TemporalScope.ALL
+    start_date = None
+    end_date = None
     anchor_year = None
     raw_expression = None
+    unroutable = False
 
-    current_year = date.today().year
+    ref_date = datetime.now(timezone.utc).date()
+    ref_year = ref_date.year
 
-    # Intervals
-    if "last year" in query_lower:
+    MONTHS = {
+        "january": 1,
+        "february": 2,
+        "march": 3,
+        "april": 4,
+        "may": 5,
+        "june": 6,
+        "july": 7,
+        "august": 8,
+        "september": 9,
+        "october": 10,
+        "november": 11,
+        "december": 12,
+        "jan": 1,
+        "feb": 2,
+        "mar": 3,
+        "apr": 4,
+        "jun": 6,
+        "jul": 7,
+        "aug": 8,
+        "sep": 9,
+        "oct": 10,
+        "nov": 11,
+        "dec": 12,
+    }
+
+    m_days = re.search(r"(past|last)\s+(\d+)\s+days?", query_lower)
+    m_months = re.search(r"(past|last)\s+(\d+)\s+months?", query_lower)
+    m_between = re.search(r"between\s+(\d{4})\s+and\s+(\d{4})", query_lower)
+    m_iso = re.search(r"(\d{4})-(\d{2})-(\d{2})", query_lower)
+    m_month_year = re.search(
+        r"\b(" + "|".join(MONTHS.keys()) + r")\s+(\d{4})\b", query_lower
+    )
+    m_cal_date = re.search(
+        r"(on\s+)?(" + "|".join(MONTHS.keys()) + r")\s+(\d{1,2}),?\s+(\d{4})",
+        query_lower,
+    )
+    m_in_year = re.search(r"in\s+(\d{4})", query_lower)
+    m_year = re.search(r"\b(20\d{2})\b", query_lower)
+
+    if _matches_any(query_lower, {"latest", "newest", "most recent", "first"}):
+        temporal_scope = TemporalScope.ALL
+    elif m_days:
         temporal_scope = TemporalScope.INTERVAL
-        anchor_year = current_year - 1
-        raw_expression = "last year"
-    elif "in 2024" in query_lower:
+        raw_expression = m_days.group(0)
+        days = int(m_days.group(2))
+        start_date = ref_date - timedelta(days=days)
+        end_date = ref_date
+    elif m_months:
         temporal_scope = TemporalScope.INTERVAL
-        anchor_year = 2024
-        raw_expression = "in 2024"
-    elif "2023" in query_lower:
+        raw_expression = m_months.group(0)
+        months = int(m_months.group(2))
+        start_date = ref_date - timedelta(days=30 * months)
+        end_date = ref_date
+    elif m_between:
         temporal_scope = TemporalScope.INTERVAL
-        anchor_year = 2023
-        raw_expression = "2023"
-    elif "past 6 months" in query_lower:
+        raw_expression = m_between.group(0)
+        y1 = int(m_between.group(1))
+        y2 = int(m_between.group(2))
+        if y1 > y2:
+            unroutable = True
+        else:
+            start_date = date(y1, 1, 1)
+            end_date = date(y2, 12, 31)
+    elif m_iso:
         temporal_scope = TemporalScope.INTERVAL
-        raw_expression = "past 6 months"
-    elif "last 3 months" in query_lower:
+        raw_expression = m_iso.group(0)
+        try:
+            d = date(int(m_iso.group(1)), int(m_iso.group(2)), int(m_iso.group(3)))
+            start_date = d
+            end_date = d
+            anchor_year = d.year
+        except ValueError:
+            unroutable = True
+    elif m_cal_date:
         temporal_scope = TemporalScope.INTERVAL
-        raw_expression = "last 3 months"
-    elif "since june" in query_lower:
+        raw_expression = m_cal_date.group(0)
+        month_str = m_cal_date.group(2)
+        day = int(m_cal_date.group(3))
+        year = int(m_cal_date.group(4))
+        try:
+            d = date(year, MONTHS[month_str], day)
+            start_date = d
+            end_date = d
+            anchor_year = year
+        except ValueError:
+            unroutable = True
+    elif m_month_year:
         temporal_scope = TemporalScope.INTERVAL
-        raw_expression = "since june"
-    # Current
+        raw_expression = m_month_year.group(0)
+        month_str = m_month_year.group(1)
+        year = int(m_month_year.group(2))
+        month = MONTHS[month_str]
+        try:
+            start_date = date(year, month, 1)
+            end_date = date(year, month, calendar.monthrange(year, month)[1])
+            anchor_year = year
+        except ValueError:
+            unroutable = True
+    elif _matches_any(query_lower, {"last year", "past year"}):
+        temporal_scope = TemporalScope.INTERVAL
+        raw_expression = "last year" if "last year" in query_lower else "past year"
+        anchor_year = ref_year - 1
+        start_date = date(anchor_year, 1, 1)
+        end_date = date(anchor_year, 12, 31)
+    elif _matches_any(query_lower, {"this year", "current year"}):
+        temporal_scope = TemporalScope.INTERVAL
+        raw_expression = "this year" if "this year" in query_lower else "current year"
+        anchor_year = ref_year
+        start_date = date(anchor_year, 1, 1)
+        end_date = date(anchor_year, 12, 31)
+    elif m_in_year:
+        temporal_scope = TemporalScope.INTERVAL
+        raw_expression = m_in_year.group(0)
+        anchor_year = int(m_in_year.group(1))
+        start_date = date(anchor_year, 1, 1)
+        end_date = date(anchor_year, 12, 31)
+    elif m_year:
+        temporal_scope = TemporalScope.INTERVAL
+        raw_expression = m_year.group(0)
+        anchor_year = int(m_year.group(1))
+        start_date = date(anchor_year, 1, 1)
+        end_date = date(anchor_year, 12, 31)
     elif _matches_any(
         query_lower, {"current", "currently", "taking", "active", "now", "present"}
     ):
         temporal_scope = TemporalScope.CURRENT
-    # Historical
     elif _matches_any(
         query_lower,
         {"past", "historical", "history", "was", "diagnosed", "previously", "stopped"},
     ):
         temporal_scope = TemporalScope.HISTORICAL
-    # Also for legacy "have" -> current
     elif "have" in query_lower.split() and temporal_scope == TemporalScope.ALL:
         temporal_scope = TemporalScope.CURRENT
 
+    if _matches_any(query_lower, {"recently", "lately", "a while ago"}):
+        if attributes or entity:
+            temporal_scope = TemporalScope.ALL
+
     temporal_constraint = TemporalConstraint(
-        scope=temporal_scope, anchor_year=anchor_year, raw_expression=raw_expression
+        scope=temporal_scope,
+        start_date=start_date,
+        end_date=end_date,
+        anchor_year=anchor_year,
+        raw_expression=raw_expression,
     )
 
     # Explicit Clinic Routing
@@ -454,7 +568,9 @@ def parse_natural_language_query(query: str) -> InquiryTarget:
     clarification_required = False
     clarification_prompt = None
 
-    if candidate_structured_domains and candidate_document_domains:
+    if unroutable:
+        routing_mode = RoutingMode.UNROUTABLE
+    elif candidate_structured_domains and candidate_document_domains:
         routing_mode = RoutingMode.CROSS_DOMAIN
     elif candidate_structured_domains:
         routing_mode = RoutingMode.STRUCTURED_ONLY
