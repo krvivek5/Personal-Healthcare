@@ -5,6 +5,7 @@ from datetime import date, datetime, timedelta, timezone
 from app.schemas.inquiry import (
     InquiryTarget,
     RoutingMode,
+    SuperlativeType,
     TemporalConstraint,
     TemporalScope,
 )
@@ -204,6 +205,9 @@ ANALYTE_ENTITIES = [
     "TSH",
     "Glucose",
 ]
+VITAL_ENTITIES = [
+    "blood pressure",
+]
 
 
 def _matches_any(query_lower: str, keywords: set[str]) -> bool:
@@ -221,13 +225,34 @@ def _matches_any(query_lower: str, keywords: set[str]) -> bool:
 def _extract_entity(query_lower: str) -> str | None:
     # ordered longest-first
     all_entities = sorted(
-        MEDICATION_ENTITIES + CONDITION_ENTITIES + ALLERGY_ENTITIES + ANALYTE_ENTITIES,
+        MEDICATION_ENTITIES
+        + CONDITION_ENTITIES
+        + ALLERGY_ENTITIES
+        + ANALYTE_ENTITIES
+        + VITAL_ENTITIES,
         key=len,
         reverse=True,
     )
     for entity in all_entities:
         if entity.lower() in query_lower:
             return entity
+    return None
+
+
+def _extract_superlative(query_lower: str) -> SuperlativeType | None:
+    masked_query = re.sub(
+        r"\b(past|last|recent)\s+(?:\d+\s+)?(?:days?|months?|weeks?|years?)\b",
+        " ",
+        query_lower,
+    )
+    if _matches_any(masked_query, {"latest", "newest", "most recent"}):
+        return SuperlativeType.LATEST
+    if re.search(r"\blast\b", masked_query):
+        return SuperlativeType.LATEST
+    if re.search(r"\brecent\b", masked_query):
+        return SuperlativeType.LATEST
+    if _matches_any(query_lower, {"first", "earliest", "oldest", "initial"}):
+        return SuperlativeType.FIRST
     return None
 
 
@@ -273,24 +298,35 @@ def parse_natural_language_query(query: str) -> InquiryTarget:
             if d not in candidate_document_domains:
                 candidate_document_domains.append(d)
 
+    # Check for consultation timeline query specifically
+    is_consultation_timeline = "consultation" in query_lower and (
+        bool(re.search(r"\bwhen\b", query_lower)) or "timeline" in query_lower
+    )
+
     # Broad Record
     if _matches_any(query_lower, BROAD_RECORD_ANCHORS):
         add_s(["conditions", "medications"])
         add_d(["clinical_documents", "reports", "prescriptions", "labs"])
 
-    # Consultation
-    if _matches_any(query_lower, CONSULTATION_ANCHORS):
+    # Consultation Timeline vs General Consultation
+    if is_consultation_timeline:
+        add_s(["timeline"])
+        add_d(["clinical_documents", "reports"])
+    elif _matches_any(query_lower, CONSULTATION_ANCHORS):
         add_d(["clinical_documents", "reports"])
 
     # Provider
     if _matches_any(query_lower, PROVIDER_ANCHORS):
-        add_d(["prescriptions", "clinical_documents"])
-        if (
-            _matches_any(query_lower, MED_STRUCTURED_ANCHORS)
-            or _matches_any(query_lower, MED_DOC_ANCHORS)
-            or _extract_entity(query_lower) in MEDICATION_ENTITIES
-        ):
-            add_s(["medications"])
+        if is_consultation_timeline:
+            add_d(["clinical_documents", "reports"])
+        else:
+            add_d(["prescriptions", "clinical_documents"])
+            if (
+                _matches_any(query_lower, MED_STRUCTURED_ANCHORS)
+                or _matches_any(query_lower, MED_DOC_ANCHORS)
+                or _extract_entity(query_lower) in MEDICATION_ENTITIES
+            ):
+                add_s(["medications"])
 
     # Medication (Structured vs Doc)
     if _matches_any(query_lower, MED_STRUCTURED_ANCHORS):
@@ -312,6 +348,17 @@ def parse_natural_language_query(query: str) -> InquiryTarget:
         add_s(["conditions"])
         add_d(["clinical_documents"])
 
+    # Blood Pressure (Vital / Clinical Document)
+    if "blood pressure" in query_lower and "high blood pressure" not in query_lower:
+        add_d(["clinical_documents", "reports"])
+
+    # Timeline & Events
+    if _matches_any(query_lower, {"timeline"}):
+        add_s(["timeline"])
+    if _matches_any(query_lower, {"event", "events", "health events"}):
+        add_s(["timeline"])
+        add_d(["reports", "labs", "clinical_documents"])
+
     # Allergies
     if _matches_any(query_lower, ALLERGY_ANCHORS):
         add_s(["allergies"])
@@ -329,8 +376,24 @@ def parse_natural_language_query(query: str) -> InquiryTarget:
     if _matches_any(query_lower, {"symptom", "symptoms"}):
         add_s(["symptoms"])
 
+    # Explicit Clinic Routing
+    if _matches_any(
+        query_lower,
+        {
+            "clinic",
+            "hospital",
+            "facility",
+            "practice",
+            "health center",
+            "medical center",
+        },
+    ):
+        add_d(["clinical_documents", "reports"])
+
     # Stage 3: Entity Extraction
     entity = _extract_entity(query_lower)
+    if is_consultation_timeline and entity is None:
+        entity = "consultation"
 
     # Stage 4: Attribute Extraction
     attributes = []
@@ -356,7 +419,7 @@ def parse_natural_language_query(query: str) -> InquiryTarget:
         attributes.append("status")
     if _matches_any(query_lower, {"frequency", "how often", "schedule", "interval"}):
         attributes.append("frequency")
-    if _matches_any(
+    if not is_consultation_timeline and _matches_any(
         query_lower,
         {
             "doctor say",
@@ -389,6 +452,7 @@ def parse_natural_language_query(query: str) -> InquiryTarget:
         if (
             "contact_number" not in attributes
             and "consultation_notes" not in attributes
+            and not is_consultation_timeline
         ):
             attributes.append("physician_name")
 
@@ -433,19 +497,18 @@ def parse_natural_language_query(query: str) -> InquiryTarget:
     m_months = re.search(r"(past|last)\s+(\d+)\s+months?", query_lower)
     m_between = re.search(r"between\s+(\d{4})\s+and\s+(\d{4})", query_lower)
     m_iso = re.search(r"(\d{4})-(\d{2})-(\d{2})", query_lower)
-    m_month_year = re.search(
-        r"\b(" + "|".join(MONTHS.keys()) + r")\s+(\d{4})\b", query_lower
-    )
     m_cal_date = re.search(
         r"(on\s+)?(" + "|".join(MONTHS.keys()) + r")\s+(\d{1,2}),?\s+(\d{4})",
         query_lower,
     )
+    m_month_year = re.search(
+        r"\b(" + "|".join(MONTHS.keys()) + r")\s+(\d{4})\b", query_lower
+    )
     m_in_year = re.search(r"in\s+(\d{4})", query_lower)
     m_year = re.search(r"\b(20\d{2})\b", query_lower)
 
-    if _matches_any(query_lower, {"latest", "newest", "most recent", "first"}):
-        temporal_scope = TemporalScope.ALL
-    elif m_days:
+    # 1. Deterministic Interval Parsing (independent of superlative presence)
+    if m_days:
         temporal_scope = TemporalScope.INTERVAL
         raw_expression = m_days.group(0)
         days = int(m_days.group(2))
@@ -526,21 +589,76 @@ def parse_natural_language_query(query: str) -> InquiryTarget:
         anchor_year = int(m_year.group(1))
         start_date = date(anchor_year, 1, 1)
         end_date = date(anchor_year, 12, 31)
-    elif _matches_any(
-        query_lower, {"current", "currently", "taking", "active", "now", "present"}
-    ):
-        temporal_scope = TemporalScope.CURRENT
-    elif _matches_any(
-        query_lower,
-        {"past", "historical", "history", "was", "diagnosed", "previously", "stopped"},
-    ):
-        temporal_scope = TemporalScope.HISTORICAL
-    elif "have" in query_lower.split() and temporal_scope == TemporalScope.ALL:
-        temporal_scope = TemporalScope.CURRENT
 
+    # 2. Deterministic Superlative Extraction
+    superlative = _extract_superlative(query_lower)
+
+    # 3. Categorical Scope Resolution (when not an explicit interval)
+    if temporal_scope != TemporalScope.INTERVAL:
+        if superlative is not None:
+            if _matches_any(
+                query_lower,
+                {"current", "currently", "taking", "active", "now", "present"},
+            ):
+                temporal_scope = TemporalScope.CURRENT
+            elif _matches_any(
+                query_lower,
+                {
+                    "discontinued",
+                    "resolved",
+                    "stopped",
+                    "history",
+                    "historical",
+                    "previously",
+                    "in the past",
+                },
+            ):
+                temporal_scope = TemporalScope.HISTORICAL
+            else:
+                temporal_scope = TemporalScope.ALL
+        else:
+            if _matches_any(
+                query_lower,
+                {"current", "currently", "taking", "active", "now", "present"},
+            ):
+                temporal_scope = TemporalScope.CURRENT
+            elif _matches_any(
+                query_lower,
+                {
+                    "past",
+                    "historical",
+                    "history",
+                    "was",
+                    "diagnosed",
+                    "previously",
+                    "stopped",
+                    "discontinued",
+                    "resolved",
+                },
+            ):
+                if (
+                    _matches_any(
+                        query_lower, {"timeline", "event", "events", "health events"}
+                    )
+                    or is_consultation_timeline
+                ):
+                    temporal_scope = TemporalScope.ALL
+                else:
+                    temporal_scope = TemporalScope.HISTORICAL
+            elif "have" in query_lower.split() and temporal_scope == TemporalScope.ALL:
+                temporal_scope = TemporalScope.CURRENT
+
+    # 4. Anchored Vague Recency Support
     if _matches_any(query_lower, {"recently", "lately", "a while ago"}):
-        if attributes or entity:
-            temporal_scope = TemporalScope.ALL
+        if (
+            attributes
+            or entity
+            or candidate_structured_domains
+            or candidate_document_domains
+        ):
+            if temporal_scope != TemporalScope.INTERVAL:
+                temporal_scope = TemporalScope.ALL
+            superlative = SuperlativeType.LATEST
 
     temporal_constraint = TemporalConstraint(
         scope=temporal_scope,
@@ -548,23 +666,24 @@ def parse_natural_language_query(query: str) -> InquiryTarget:
         end_date=end_date,
         anchor_year=anchor_year,
         raw_expression=raw_expression,
+        superlative=superlative,
     )
 
-    # Explicit Clinic Routing
-    if _matches_any(
-        query_lower,
-        {
-            "clinic",
-            "hospital",
-            "facility",
-            "practice",
-            "health center",
-            "medical center",
-        },
-    ):
-        add_d(["clinical_documents", "reports"])
+    # Stage 5: Comparison Intent Determination
+    COMPARISON_PATTERNS = [
+        r"\bcompare\b",
+        r"\bcomparison\b",
+        r"\bhow (has|have|did)\b.*?\b(change|changed)\b",
+        r"\b(change|changed)\b.*?\bover time\b",
+        r"\bdifference between\b",
+        r"\btrends?\b",
+        r"\bprogression\b",
+        r"\bover time\b",
+    ]
+    is_comparison = any(re.search(pat, query_lower) for pat in COMPARISON_PATTERNS)
+    question_intent = "COMPARISON" if is_comparison else "QUERY"
 
-    # Stage 5: RoutingMode & Clarification Determination
+    # Stage 6: RoutingMode & Clarification Determination
     clarification_required = False
     clarification_prompt = None
 
@@ -597,5 +716,5 @@ def parse_natural_language_query(query: str) -> InquiryTarget:
         routing_mode=routing_mode,
         clarification_required=clarification_required,
         clarification_prompt=clarification_prompt,
-        question_intent="QUERY",
+        question_intent=question_intent,
     )

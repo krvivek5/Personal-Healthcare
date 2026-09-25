@@ -24,6 +24,7 @@ STRUCTURED_DOMAINS = {
     "symptoms",
     "goals",
     "profile",
+    "timeline",
 }
 DOCUMENT_DOMAINS = {"labs", "reports", "prescriptions", "clinical_documents"}
 
@@ -51,6 +52,13 @@ class TemporalScope(str, Enum):
     INTERVAL = "interval"
 
 
+class SuperlativeType(str, Enum):
+    """Canonical chronological extremity requested by user inquiry."""
+
+    LATEST = "latest"
+    FIRST = "first"
+
+
 class TemporalConstraint(BaseModel):
     """Detailed temporal boundaries extracted from the natural language query."""
 
@@ -59,6 +67,7 @@ class TemporalConstraint(BaseModel):
     end_date: Optional[date] = None
     anchor_year: Optional[int] = None
     raw_expression: Optional[str] = None
+    superlative: Optional[SuperlativeType] = None
 
 
 class InquiryTarget(BaseModel):
