@@ -215,6 +215,13 @@ async def submit_health_inquiry(
                 temporal_kwargs["start_date"] = target.temporal_constraint.start_date
             if target.temporal_constraint.end_date is not None:
                 temporal_kwargs["end_date"] = target.temporal_constraint.end_date
+        if (
+            target.temporal_constraint
+            and target.temporal_constraint.superlative is not None
+        ):
+            temporal_kwargs["superlative"] = target.temporal_constraint.superlative
+        if target.target_entity is not None:
+            temporal_kwargs["target_entity"] = target.target_entity
 
         try:
             retrieval_result = await retrieve_document_passages(
@@ -287,6 +294,13 @@ async def submit_health_inquiry(
                 temporal_kwargs["start_date"] = target.temporal_constraint.start_date
             if target.temporal_constraint.end_date is not None:
                 temporal_kwargs["end_date"] = target.temporal_constraint.end_date
+        if (
+            target.temporal_constraint
+            and target.temporal_constraint.superlative is not None
+        ):
+            temporal_kwargs["superlative"] = target.temporal_constraint.superlative
+        if target.target_entity is not None:
+            temporal_kwargs["target_entity"] = target.target_entity
 
         try:
             retrieval_result = await retrieve_document_passages(

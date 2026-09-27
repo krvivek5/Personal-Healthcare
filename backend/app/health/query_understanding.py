@@ -22,6 +22,8 @@ PROVIDER_ANCHORS = {
     "who signed",
     "who wrote",
     "who prescribed",
+    "who put me on",
+    "who started me on",
 }
 
 # Split MEDICATION_ANCHORS to handle DOCUMENT_ONLY vs CROSS_DOMAIN correctly
@@ -207,6 +209,8 @@ ANALYTE_ENTITIES = [
 ]
 VITAL_ENTITIES = [
     "blood pressure",
+    "vital signs",
+    "vitals",
 ]
 
 
@@ -348,8 +352,10 @@ def parse_natural_language_query(query: str) -> InquiryTarget:
         add_s(["conditions"])
         add_d(["clinical_documents"])
 
-    # Blood Pressure (Vital / Clinical Document)
+    # Blood Pressure & Vitals (Clinical Document / Reports)
     if "blood pressure" in query_lower and "high blood pressure" not in query_lower:
+        add_d(["clinical_documents", "reports"])
+    if _matches_any(query_lower, {"vitals", "vital signs", "vital sign"}):
         add_d(["clinical_documents", "reports"])
 
     # Timeline & Events
@@ -447,6 +453,8 @@ def parse_natural_language_query(query: str) -> InquiryTarget:
             "who signed",
             "who wrote",
             "who prescribed",
+            "who put me on",
+            "who started me on",
         },
     ):
         if (

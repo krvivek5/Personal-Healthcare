@@ -158,6 +158,27 @@ def resolve_lexical_variants(target_entity: str) -> list[str]:
     return [cleaned]
 
 
+def build_lexical_predicates(target_entity: str) -> list:
+    """Build deterministic SQL predicates for lexical target_entity matching.
+
+    Uses PostgreSQL ARE word-boundary regex for single-token variants and
+    parameterized ILIKE for multi-word phrase variants.
+    """
+    variants = resolve_lexical_variants(target_entity)
+    variant_predicates = []
+    for var in variants:
+        tokens = var.split()
+        if len(tokens) == 1:
+            pat = build_token_boundary_regex(var)
+            variant_predicates.append(DocumentChunk.chunk_text.op("~*")(pat))
+        elif len(tokens) > 1:
+            escaped_ph = escape_ilike_literal(var, escape_char="!")
+            variant_predicates.append(
+                DocumentChunk.chunk_text.ilike(f"%{escaped_ph}%", escape="!")
+            )
+    return variant_predicates
+
+
 # ---------------------------------------------------------------------------
 # Typed exception hierarchy (section 12 of architecture spec)
 # ---------------------------------------------------------------------------
@@ -469,12 +490,112 @@ async def retrieve_document_passages(
     try:
         async with db.begin():
             # --------------------------------------------------------------
-            # Branch 1: Ordinary Non-Superlative Retrieval (Preserved verbatim)
+            # Branch 1: Ordinary Non-Superlative Retrieval
             # --------------------------------------------------------------
             if superlative is None:
                 await db.execute(text("SET LOCAL hnsw.iterative_scan = 'strict_order'"))
 
-                where_clauses = [
+                # ----------------------------------------------------------
+                # Branch 1a: Unanchored Ordinary Retrieval (target_entity is None)
+                # Preserved verbatim: dense-only retrieval with LIMIT effective_top_k
+                # ----------------------------------------------------------
+                if target_entity is None:
+                    where_clauses = [
+                        DocumentChunk.patient_id == patient_id,
+                        MedicalDocument.patient_id == patient_id,
+                        MedicalDocument.document_type.in_(target_document_types),
+                        DocumentExtraction.extraction_status == "COMPLETED",
+                        DocumentExtraction.extracted_text.is_not(None),
+                        func.length(func.trim(DocumentExtraction.extracted_text)) > 0,
+                        DocumentChunk.embedding.is_not(None),
+                        func.length(func.trim(DocumentChunk.chunk_text)) > 0,
+                    ]
+
+                    if start_date is not None and end_date is not None:
+                        where_clauses.append(MedicalDocument.document_date.is_not(None))
+                        where_clauses.append(
+                            MedicalDocument.document_date.between(start_date, end_date)
+                        )
+
+                    subquery = (
+                        select(
+                            DocumentChunk.id.label("chunk_id"),
+                            DocumentChunk.document_id.label("document_id"),
+                            DocumentChunk.patient_id.label("patient_id"),
+                            DocumentChunk.chunk_index.label("chunk_index"),
+                            DocumentChunk.page_number.label("page_number"),
+                            DocumentChunk.chunk_text.label("chunk_text"),
+                            MedicalDocument.display_name.label("document_display_name"),
+                            MedicalDocument.document_type.label("document_type"),
+                            MedicalDocument.document_date.label("document_date"),
+                            DocumentChunk.embedding.cosine_distance(query_vector).label(
+                                "cosine_distance"
+                            ),
+                        )
+                        .join(
+                            MedicalDocument,
+                            (DocumentChunk.document_id == MedicalDocument.id)
+                            & (DocumentChunk.patient_id == MedicalDocument.patient_id),
+                        )
+                        .join(
+                            DocumentExtraction,
+                            (MedicalDocument.id == DocumentExtraction.document_id)
+                            & (
+                                MedicalDocument.patient_id
+                                == DocumentExtraction.patient_id
+                            ),
+                        )
+                        .where(*where_clauses)
+                        .order_by(
+                            DocumentChunk.embedding.cosine_distance(query_vector).asc()
+                        )
+                        .limit(effective_top_k)
+                    ).subquery("candidate_chunks")
+
+                    final_stmt = select(subquery).order_by(
+                        subquery.c.cosine_distance.asc(),
+                        subquery.c.document_id.asc(),
+                        subquery.c.chunk_index.asc(),
+                    )
+
+                    result = await db.execute(final_stmt)
+                    rows = result.all()
+
+                    passages: list[RetrievedPassage] = []
+                    for row in rows:
+                        cosine_dist = float(row.cosine_distance)
+                        passages.append(
+                            RetrievedPassage(
+                                chunk_id=row.chunk_id,
+                                document_id=row.document_id,
+                                patient_id=row.patient_id,
+                                chunk_index=row.chunk_index,
+                                page_number=row.page_number,
+                                chunk_text=row.chunk_text,
+                                document_display_name=row.document_display_name,
+                                document_type=row.document_type,
+                                document_date=row.document_date,
+                                cosine_distance=cosine_dist,
+                                similarity=max(0.0, 1.0 - cosine_dist),
+                            )
+                        )
+
+                    return RetrievalResult(
+                        patient_id=patient_id,
+                        target_domains=tuple(resolved_domains),
+                        query_text=normalized_query,
+                        top_k=effective_top_k,
+                        passages=tuple(passages),
+                    )
+
+                # ----------------------------------------------------------
+                # Branch 1b: Entity-Anchored Ordinary Retrieval
+                # (target_entity is not None)
+                # Hybrid Recall Union: C_lexical (K=10) ∪ C_dense (K=10)
+                # Guarantees entity-bearing documents are retained under corpus growth
+                # while preserving bounded retrieval (|U| <= 20).
+                # ----------------------------------------------------------
+                dense_where = [
                     DocumentChunk.patient_id == patient_id,
                     MedicalDocument.patient_id == patient_id,
                     MedicalDocument.document_type.in_(target_document_types),
@@ -484,14 +605,13 @@ async def retrieve_document_passages(
                     DocumentChunk.embedding.is_not(None),
                     func.length(func.trim(DocumentChunk.chunk_text)) > 0,
                 ]
-
                 if start_date is not None and end_date is not None:
-                    where_clauses.append(MedicalDocument.document_date.is_not(None))
-                    where_clauses.append(
+                    dense_where.append(MedicalDocument.document_date.is_not(None))
+                    dense_where.append(
                         MedicalDocument.document_date.between(start_date, end_date)
                     )
 
-                subquery = (
+                dense_subquery = (
                     select(
                         DocumentChunk.id.label("chunk_id"),
                         DocumentChunk.document_id.label("document_id"),
@@ -516,45 +636,139 @@ async def retrieve_document_passages(
                         (MedicalDocument.id == DocumentExtraction.document_id)
                         & (MedicalDocument.patient_id == DocumentExtraction.patient_id),
                     )
-                    .where(*where_clauses)
-                    .order_by(DocumentChunk.embedding.cosine_distance(query_vector).asc())
-                    .limit(effective_top_k)
-                ).subquery("candidate_chunks")
-
-                final_stmt = select(subquery).order_by(
-                    subquery.c.cosine_distance.asc(),
-                    subquery.c.document_id.asc(),
-                    subquery.c.chunk_index.asc(),
-                )
-
-                result = await db.execute(final_stmt)
-                rows = result.all()
-
-                passages: list[RetrievedPassage] = []
-                for row in rows:
-                    cosine_dist = float(row.cosine_distance)
-                    passages.append(
-                        RetrievedPassage(
-                            chunk_id=row.chunk_id,
-                            document_id=row.document_id,
-                            patient_id=row.patient_id,
-                            chunk_index=row.chunk_index,
-                            page_number=row.page_number,
-                            chunk_text=row.chunk_text,
-                            document_display_name=row.document_display_name,
-                            document_type=row.document_type,
-                            document_date=row.document_date,
-                            cosine_distance=cosine_dist,
-                            similarity=max(0.0, 1.0 - cosine_dist),
-                        )
+                    .where(*dense_where)
+                    .order_by(
+                        DocumentChunk.embedding.cosine_distance(query_vector).asc()
                     )
+                    .limit(K_DENSE)
+                ).subquery("dense_candidate_chunks")
+
+                dense_final = select(dense_subquery).order_by(
+                    dense_subquery.c.cosine_distance.asc(),
+                    dense_subquery.c.document_id.asc(),
+                    dense_subquery.c.chunk_index.asc(),
+                )
+                dense_rows = (await db.execute(dense_final)).all()
+
+                # Deterministic Lexical / Entity Candidates (K_LEXICAL = 10)
+                variant_predicates = build_lexical_predicates(target_entity)
+                if variant_predicates:
+                    lexical_where = [
+                        DocumentChunk.patient_id == patient_id,
+                        MedicalDocument.patient_id == patient_id,
+                        MedicalDocument.document_type.in_(target_document_types),
+                        DocumentExtraction.extraction_status == "COMPLETED",
+                        DocumentExtraction.extracted_text.is_not(None),
+                        func.length(func.trim(DocumentExtraction.extracted_text)) > 0,
+                        DocumentChunk.embedding.is_not(None),
+                        func.length(func.trim(DocumentChunk.chunk_text)) > 0,
+                        or_(*variant_predicates),
+                    ]
+                    if start_date is not None and end_date is not None:
+                        lexical_where.append(MedicalDocument.document_date.is_not(None))
+                        lexical_where.append(
+                            MedicalDocument.document_date.between(start_date, end_date)
+                        )
+
+                    lexical_order = [
+                        MedicalDocument.document_date.desc().nullslast(),
+                        MedicalDocument.id.asc(),
+                        DocumentChunk.chunk_index.asc(),
+                    ]
+
+                    lexical_stmt = (
+                        select(
+                            DocumentChunk.id.label("chunk_id"),
+                            DocumentChunk.document_id.label("document_id"),
+                            DocumentChunk.patient_id.label("patient_id"),
+                            DocumentChunk.chunk_index.label("chunk_index"),
+                            DocumentChunk.page_number.label("page_number"),
+                            DocumentChunk.chunk_text.label("chunk_text"),
+                            MedicalDocument.display_name.label("document_display_name"),
+                            MedicalDocument.document_type.label("document_type"),
+                            MedicalDocument.document_date.label("document_date"),
+                        )
+                        .join(
+                            MedicalDocument,
+                            (DocumentChunk.document_id == MedicalDocument.id)
+                            & (DocumentChunk.patient_id == MedicalDocument.patient_id),
+                        )
+                        .join(
+                            DocumentExtraction,
+                            (MedicalDocument.id == DocumentExtraction.document_id)
+                            & (
+                                MedicalDocument.patient_id
+                                == DocumentExtraction.patient_id
+                            ),
+                        )
+                        .where(*lexical_where)
+                        .order_by(*lexical_order)
+                        .limit(K_LEXICAL)
+                    )
+                    lexical_rows = (await db.execute(lexical_stmt)).all()
+                else:
+                    lexical_rows = []
+
+                dense_passages = [
+                    RetrievedPassage(
+                        chunk_id=r.chunk_id,
+                        document_id=r.document_id,
+                        patient_id=r.patient_id,
+                        chunk_index=r.chunk_index,
+                        page_number=r.page_number,
+                        chunk_text=r.chunk_text,
+                        document_display_name=r.document_display_name,
+                        document_type=r.document_type,
+                        document_date=r.document_date,
+                        cosine_distance=float(r.cosine_distance),
+                        similarity=max(0.0, 1.0 - float(r.cosine_distance)),
+                    )
+                    for r in dense_rows
+                ]
+
+                dense_by_id = {p.chunk_id: p for p in dense_passages}
+
+                lexical_passages = [
+                    dense_by_id.get(
+                        r.chunk_id,
+                        RetrievedPassage(
+                            chunk_id=r.chunk_id,
+                            document_id=r.document_id,
+                            patient_id=r.patient_id,
+                            chunk_index=r.chunk_index,
+                            page_number=r.page_number,
+                            chunk_text=r.chunk_text,
+                            document_display_name=r.document_display_name,
+                            document_type=r.document_type,
+                            document_date=r.document_date,
+                            cosine_distance=LEXICAL_SENTINEL_COSINE_DISTANCE,
+                            similarity=1.0,
+                        ),
+                    )
+                    for r in lexical_rows
+                ]
+
+                # Candidate union: entity-matching lexical candidates prioritized first,
+                # then dense candidates fill remaining slots.
+                seen_chunk_ids: set[uuid.UUID] = set()
+                union_candidates: list[RetrievedPassage] = []
+
+                for p in lexical_passages:
+                    if p.chunk_id not in seen_chunk_ids:
+                        seen_chunk_ids.add(p.chunk_id)
+                        union_candidates.append(p)
+
+                for p in dense_passages:
+                    if p.chunk_id not in seen_chunk_ids:
+                        seen_chunk_ids.add(p.chunk_id)
+                        union_candidates.append(p)
 
                 return RetrievalResult(
                     patient_id=patient_id,
                     target_domains=tuple(resolved_domains),
                     query_text=normalized_query,
                     top_k=effective_top_k,
-                    passages=tuple(passages),
+                    passages=tuple(union_candidates),
                 )
 
             # --------------------------------------------------------------
@@ -633,7 +847,9 @@ async def retrieve_document_passages(
                         & (MedicalDocument.patient_id == DocumentExtraction.patient_id),
                     )
                     .where(*where_clauses)
-                    .order_by(DocumentChunk.embedding.cosine_distance(query_vector).asc())
+                    .order_by(
+                        DocumentChunk.embedding.cosine_distance(query_vector).asc()
+                    )
                     .limit(effective_top_k)
                 ).subquery("candidate_chunks")
 
@@ -734,18 +950,7 @@ async def retrieve_document_passages(
             dense_rows = (await db.execute(dense_final)).all()
 
             # Path B: Deterministic Lexical / Entity Candidates (K_LEXICAL = 10)
-            variants = resolve_lexical_variants(target_entity)
-            variant_predicates = []
-            for var in variants:
-                tokens = var.split()
-                if len(tokens) == 1:
-                    pat = build_token_boundary_regex(var)
-                    variant_predicates.append(DocumentChunk.chunk_text.op("~*")(pat))
-                elif len(tokens) > 1:
-                    escaped_ph = escape_ilike_literal(var, escape_char="!")
-                    variant_predicates.append(
-                        DocumentChunk.chunk_text.ilike(f"%{escaped_ph}%", escape="!")
-                    )
+            variant_predicates = build_lexical_predicates(target_entity)
 
             if variant_predicates:
                 lexical_where = [

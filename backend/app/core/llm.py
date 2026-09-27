@@ -1,5 +1,6 @@
+import re
 import uuid
-from typing import Protocol
+from typing import Any, Protocol
 
 from pydantic import BaseModel, Field
 
@@ -79,6 +80,93 @@ def _build_system_prompt() -> str:
         "If a safety notice is provided, preserve it exactly and do not add "
         "your own medical advice."
     )
+
+
+def _extract_attribute_details(
+    matched_fields: list[str],
+    matched_records: list[Any],
+    passages: list[Any],
+) -> list[tuple[str, str | None]]:
+    """Extract explicit values for matched attributes from records or passages."""
+    details: list[tuple[str, str | None]] = []
+    passage_text = " ".join([getattr(p, "chunk_text", "") for p in passages])
+
+    for attr in matched_fields:
+        val: str | None = None
+        # 1. Try structured records
+        for r in matched_records:
+            if hasattr(r, attr) and getattr(r, attr) is not None:
+                val = str(getattr(r, attr))
+                break
+
+        # 2. Try passage text if not found in structured records
+        if val is None and passage_text:
+            if attr == "dosage":
+                m = re.search(
+                    r"(?:dosage|dose|strength)\s*:\s*([^\n\r]+)",
+                    passage_text,
+                    re.IGNORECASE,
+                )
+                if m:
+                    val = m.group(1).strip()
+                else:
+                    m2 = re.search(
+                        r"\b(\d+(?:\.\d+)?\s*(?:mg|mcg|g|ml)\b[^\n\r,.]*)",
+                        passage_text,
+                        re.IGNORECASE,
+                    )
+                    if m2:
+                        val = m2.group(1).strip()
+            elif attr == "physician_name":
+                m = re.search(
+                    r"(?:prescribing (?:physician|doctor)|prescribed by|ordered by|"
+                    r"physician|provider|doctor)\s*:\s*([^\n\r]+)",
+                    passage_text,
+                    re.IGNORECASE,
+                )
+                if m:
+                    cleaned = re.sub(r"\(.*?\)", "", m.group(1)).strip()
+                    val = cleaned or m.group(1).strip()
+                else:
+                    m2 = re.search(
+                        r"\b(dr\.?\s+[a-z]+(?:\s+[a-z]+){0,2}(?:,\s*md)?)\b",
+                        passage_text,
+                        re.IGNORECASE,
+                    )
+                    if m2:
+                        val = m2.group(1).strip()
+            elif attr == "clinic":
+                m = re.search(
+                    r"(?:clinic|facility|hospital|practice)\s*:\s*([^\n\r]+)",
+                    passage_text,
+                    re.IGNORECASE,
+                )
+                if m:
+                    cleaned = re.sub(r"\(.*?\)", "", m.group(1)).strip()
+                    val = cleaned or m.group(1).strip()
+            elif attr == "contact_number":
+                m = re.search(
+                    r"(?:phone|tel|telephone|contact|fax)\s*(?:#|no\.?|number)?\s*:\s*([^\n\r]+)",
+                    passage_text,
+                    re.IGNORECASE,
+                )
+                if m:
+                    val = m.group(1).strip()
+            elif attr == "frequency":
+                m = re.search(
+                    r"(?:frequency|schedule)\s*:\s*([^\n\r]+)",
+                    passage_text,
+                    re.IGNORECASE,
+                )
+                if m:
+                    val = m.group(1).strip()
+            elif attr == "status":
+                m = re.search(r"\bstatus\s*:\s*([^\n\r]+)", passage_text, re.IGNORECASE)
+                if m:
+                    val = m.group(1).strip()
+
+        details.append((attr, val))
+    return details
 
 
 class MockLLMProvider:
@@ -218,9 +306,18 @@ class MockLLMProvider:
                     answer_text = "Records confirm requested information."
 
             if evidence.matched_fields:
-                answer_text += (
-                    f" Attributes {', '.join(evidence.matched_fields)} are present."
+                attr_details = _extract_attribute_details(
+                    evidence.matched_fields,
+                    evidence.matched_records,
+                    context.passages,
                 )
+                formatted_attrs = []
+                for attr, val in attr_details:
+                    if val:
+                        formatted_attrs.append(f"{attr}: {val}")
+                    else:
+                        formatted_attrs.append(attr)
+                answer_text += f" Attributes {', '.join(formatted_attrs)} are present."
 
         return SynthesisResult(
             answer_text=answer_text.strip(),
