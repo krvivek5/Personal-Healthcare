@@ -10,7 +10,14 @@ from pydantic import BaseModel, Field
 
 from app.health.inquiry_context import StructuredHealthContext
 from app.health.retrieval import RetrievalResult, RetrievedPassage
-from app.schemas.inquiry import EvidenceStatus, InquiryTarget
+from app.schemas.inquiry import (
+    EvidenceStatus,
+    InquiryTarget,
+    SuperlativeType,
+    TemporalScope,
+    TimelineEventEvidence,
+)
+from app.schemas.timeline import HealthEvent
 
 logger = logging.getLogger(__name__)
 
@@ -47,14 +54,299 @@ class EvidenceResult(BaseModel):
     qualified_passages: list[RetrievedPassage] = Field(default_factory=list)
 
 
-def evaluate_evidence(
-    target: InquiryTarget, context: StructuredHealthContext
+def _parse_event_date(date_str: str) -> Optional[date]:
+    """Parse YYYY-MM-DD from an event_date string."""
+    if not date_str:
+        return None
+    try:
+        return date.fromisoformat(date_str[:10])
+    except (ValueError, TypeError):
+        return None
+
+
+def _timeline_empty_directive(target: InquiryTarget) -> EvidenceResult:
+    """Safe directive when recent_timeline_events is empty."""
+    if target.target_entity:
+        return EvidenceResult(
+            status=EvidenceStatus.INSUFFICIENT,
+            evidence_directive=(
+                f"No timeline events were recorded matching: {target.target_entity}."
+            ),
+        )
+    return EvidenceResult(
+        status=EvidenceStatus.INSUFFICIENT,
+        evidence_directive="Timeline events are not recorded.",
+    )
+
+
+def _timeline_temporal_empty_directive(target: InquiryTarget) -> EvidenceResult:
+    """Safe directive when timeline events exist but none survive temporal filtering."""
+    if target.temporal_scope in ("interval", TemporalScope.INTERVAL):
+        time_phrase = (
+            target.temporal_constraint.raw_expression
+            if target.temporal_constraint
+            else None
+        ) or "the requested time period"
+        return EvidenceResult(
+            status=EvidenceStatus.INSUFFICIENT,
+            evidence_directive=f"No timeline events found for {time_phrase}.",
+        )
+    elif target.temporal_scope in ("current", TemporalScope.CURRENT):
+        return EvidenceResult(
+            status=EvidenceStatus.INSUFFICIENT,
+            evidence_directive="Current timeline events are not recorded.",
+        )
+    elif target.temporal_scope in ("historical", TemporalScope.HISTORICAL):
+        return EvidenceResult(
+            status=EvidenceStatus.INSUFFICIENT,
+            evidence_directive="Historical timeline events are not recorded.",
+        )
+    return EvidenceResult(
+        status=EvidenceStatus.INSUFFICIENT,
+        evidence_directive="Timeline events are not recorded.",
+    )
+
+
+def _filter_timeline_temporal(
+    target: InquiryTarget,
+    events: list[HealthEvent],
+) -> list[HealthEvent]:
+    """Filter timeline events by categorical or interval temporal constraint."""
+    scope = target.temporal_scope
+    if scope in ("interval", TemporalScope.INTERVAL):
+        constraint = target.temporal_constraint
+        if constraint and constraint.start_date and constraint.end_date:
+            filtered = []
+            for e in events:
+                ed = _parse_event_date(e.event_date)
+                if ed and constraint.start_date <= ed <= constraint.end_date:
+                    filtered.append(e)
+            return filtered
+        return list(events)
+    elif scope in ("current", TemporalScope.CURRENT):
+        return [e for e in events if e.event_state == "current"]
+    elif scope in ("historical", TemporalScope.HISTORICAL):
+        return [e for e in events if e.event_state == "historical"]
+    return list(events)
+
+
+def _resolve_timeline_superlatives(
+    target: InquiryTarget,
+    records: list[TimelineEventEvidence],
+) -> list[TimelineEventEvidence] | EvidenceResult:
+    """Resolves LATEST / FIRST clinical superlatives over timeline events.
+
+    Disqualifies DOCUMENT_UPLOADED and clinically undated events.
+    Orders tied events on the winning date deterministically by record.id ASC.
+    Returns EvidenceResult with PARTIALLY_SUFFICIENT for undated superlative evidence.
+    """
+    if not (
+        target.temporal_constraint
+        and target.temporal_constraint.superlative
+        in (SuperlativeType.LATEST, SuperlativeType.FIRST)
+    ):
+        return records
+
+    superlative = target.temporal_constraint.superlative
+    superlative_value = superlative.value
+
+    # Filter out DOCUMENT_UPLOADED and clinically undated events
+    dated_records: list[tuple[date, TimelineEventEvidence]] = []
+    for r in records:
+        if r.event_type == "DOCUMENT_UPLOADED":
+            continue
+        parsed_d = _parse_event_date(r.event_date)
+        if parsed_d is not None:
+            dated_records.append((parsed_d, r))
+
+    if not dated_records:
+        if target.target_entity:
+            directive = (
+                f"Records for {target.target_entity} were found, but lack "
+                f"documented clinical dates to verify which is the "
+                f"{superlative_value}."
+            )
+        else:
+            directive = (
+                f"Timeline events were found, but lack documented clinical dates "
+                f"to verify which is the {superlative_value}."
+            )
+        return EvidenceResult(
+            status=EvidenceStatus.PARTIALLY_SUFFICIENT,
+            matched_records=records,
+            temporal_interpretation=target.temporal_scope,
+            evidence_directive=directive,
+        )
+
+    # Determine winning date
+    if superlative == SuperlativeType.LATEST:
+        winning_date = max(d for d, _ in dated_records)
+    else:  # FIRST
+        winning_date = min(d for d, _ in dated_records)
+
+    # Retain all events on winning date and sort deterministically by record.id ASC
+    winning_records = [r for d, r in dated_records if d == winning_date]
+    winning_records.sort(key=lambda r: r.id)
+    return winning_records
+
+
+def evaluate_timeline_evidence(
+    target: InquiryTarget,
+    context: StructuredHealthContext,
 ) -> EvidenceResult:
+    """Deterministic evaluation of timeline events against an InquiryTarget.
+
+    Adheres strictly to the M5 7-case truth table and M6 superlative contracts.
     """
-    Evaluates query against structured context to establish evidence truth.
-    No LLM used. Enforces negative-absence protection ('not recorded').
+    events = context.recent_timeline_events
+    if not events:
+        return _timeline_empty_directive(target)
+
+    # 1. Entity Qualification
+    entity_lower = (
+        target.target_entity.lower().strip() if target.target_entity else None
+    )
+    qualified_events: list[HealthEvent] = []
+    if entity_lower:
+        for e in events:
+            title_match = entity_lower in e.title.lower()
+            desc_match = bool(e.description and entity_lower in e.description.lower())
+            if title_match or desc_match:
+                qualified_events.append(e)
+
+        if not qualified_events:
+            return EvidenceResult(
+                status=EvidenceStatus.INSUFFICIENT,
+                evidence_directive=(
+                    f"No timeline events were recorded matching: "
+                    f"{target.target_entity}."
+                ),
+            )
+    else:
+        qualified_events = list(events)
+
+    # 2. Temporal Filtering (INTERVAL, CURRENT, HISTORICAL, ALL)
+    surviving_events = _filter_timeline_temporal(target, qualified_events)
+    if not surviving_events:
+        return _timeline_temporal_empty_directive(target)
+
+    # 3. Convert surviving HealthEvent instances to TimelineEventEvidence
+    wrapped_records = [
+        TimelineEventEvidence(**e.model_dump()) for e in surviving_events
+    ]
+
+    # 4. Superlative Extremity Resolution (LATEST / FIRST)
+    resolved_records = _resolve_timeline_superlatives(target, wrapped_records)
+    if isinstance(resolved_records, EvidenceResult):
+        return resolved_records
+
+    # 5. Attribute Verification
+    if target.requested_attributes:
+        matched_fields = []
+        missing_fields = []
+        for attr in target.requested_attributes:
+            attr_found = False
+            for r in resolved_records:
+                search_texts = [t for t in (r.title, r.description) if t]
+                for text in search_texts:
+                    if _evaluate_attribute_lexicon(attr, text) or _keyword_present(
+                        attr.lower(), text.lower()
+                    ):
+                        attr_found = True
+                        break
+                if attr_found:
+                    break
+            if attr_found:
+                matched_fields.append(attr)
+            else:
+                missing_fields.append(attr)
+
+        human_missing = [HUMAN_ATTRIBUTE_LABELS.get(a, a) for a in missing_fields]
+        human_missing_str = ", ".join(human_missing)
+
+        if entity_lower:
+            if missing_fields:
+                return EvidenceResult(
+                    status=EvidenceStatus.PARTIALLY_SUFFICIENT,
+                    matched_records=resolved_records,
+                    matched_fields=matched_fields,
+                    missing_fields=missing_fields,
+                    temporal_interpretation=target.temporal_scope,
+                    evidence_directive=(
+                        f"{target.target_entity} is recorded on your timeline, "
+                        f"but not found: {human_missing_str}."
+                    ),
+                )
+            return EvidenceResult(
+                status=EvidenceStatus.SUFFICIENT,
+                matched_records=resolved_records,
+                matched_fields=matched_fields,
+                missing_fields=[],
+                temporal_interpretation=target.temporal_scope,
+                evidence_directive=(
+                    "All requested information is recorded on your timeline."
+                ),
+            )
+        else:
+            # Attribute-only query
+            if not matched_fields:
+                return EvidenceResult(
+                    status=EvidenceStatus.INSUFFICIENT,
+                    missing_fields=missing_fields,
+                    temporal_interpretation=target.temporal_scope,
+                    evidence_directive=(
+                        f"No timeline events contain a record of: {human_missing_str}."
+                    ),
+                )
+            elif missing_fields:
+                return EvidenceResult(
+                    status=EvidenceStatus.PARTIALLY_SUFFICIENT,
+                    matched_records=resolved_records,
+                    matched_fields=matched_fields,
+                    missing_fields=missing_fields,
+                    temporal_interpretation=target.temporal_scope,
+                    evidence_directive=(
+                        "Information partially found on your timeline. "
+                        f"Not found: {human_missing_str}."
+                    ),
+                )
+            return EvidenceResult(
+                status=EvidenceStatus.SUFFICIENT,
+                matched_records=resolved_records,
+                matched_fields=matched_fields,
+                temporal_interpretation=target.temporal_scope,
+                evidence_directive=(
+                    "All requested information is recorded on your timeline."
+                ),
+            )
+
+    # 6. Entity-only or Generic query
+    if entity_lower:
+        return EvidenceResult(
+            status=EvidenceStatus.SUFFICIENT,
+            matched_records=resolved_records,
+            temporal_interpretation=target.temporal_scope,
+            evidence_directive="Relevant records found on your timeline.",
+        )
+
+    # Generic timeline query (no entity, no attributes)
+    return EvidenceResult(
+        status=EvidenceStatus.SUFFICIENT,
+        matched_records=resolved_records,
+        temporal_interpretation=target.temporal_scope,
+        evidence_directive="Timeline events are available.",
+    )
+
+
+def _evaluate_single_structured_domain(
+    domain: str,
+    target: InquiryTarget,
+    context: StructuredHealthContext,
+) -> EvidenceResult:
+    """Evaluates query against a single structured relational domain.
+
+    Preserves exact M1-M5 baseline evaluation behavior.
     """
-    domain = target.target_domain
     if not domain or not hasattr(context, domain):
         return EvidenceResult(
             status=EvidenceStatus.INSUFFICIENT,
@@ -76,7 +368,6 @@ def evaluate_evidence(
             matched = []
             entity_lower = target.target_entity.lower()
             for r in records:
-                # Naive deterministic matching. Real matching could be more robust.
                 name_val = getattr(
                     r, "name", getattr(r, "allergen", getattr(r, "description", ""))
                 )
@@ -96,7 +387,6 @@ def evaluate_evidence(
             filtered = []
             for r in records:
                 if domain == "allergies":
-                    # Allergies lack inferred active/resolved state
                     filtered.append(r)
                 elif hasattr(r, "status") and getattr(r, "status") in (
                     "active",
@@ -233,6 +523,177 @@ def evaluate_evidence(
             temporal_interpretation=target.temporal_scope,
             evidence_directive="Relevant records found.",
         )
+
+
+def _pool_structured_evidence(
+    target: InquiryTarget,
+    domain_results: list[EvidenceResult],
+) -> EvidenceResult:
+    """Pools evidence results across candidate structured domains.
+
+    Strictly adheres to the M5 truth table and Rule F caveat propagation.
+    """
+    # 1. Record Pooling:
+    pooled_records = []
+    for res in domain_results:
+        if res.status != EvidenceStatus.INSUFFICIENT:
+            pooled_records.extend(res.matched_records)
+
+    # 2. Attribute Pooling:
+    pooled_matched_set = set()
+    for res in domain_results:
+        if res.status != EvidenceStatus.INSUFFICIENT:
+            pooled_matched_set.update(res.matched_fields)
+
+    matched_fields_list = [
+        a for a in target.requested_attributes if a in pooled_matched_set
+    ]
+    missing_fields_list = [
+        a for a in target.requested_attributes if a not in pooled_matched_set
+    ]
+
+    entity_lower = (
+        target.target_entity.lower().strip() if target.target_entity else None
+    )
+
+    # Compute standard M5 pooled status AND corresponding base_directive
+    # across all reachable branches:
+    if target.requested_attributes:
+        human_missing = [HUMAN_ATTRIBUTE_LABELS.get(a, a) for a in missing_fields_list]
+        human_missing_str = ", ".join(human_missing)
+        if entity_lower:
+            if not pooled_records:
+                pooled_status = EvidenceStatus.INSUFFICIENT
+                base_directive = f"No records found matching: {target.target_entity}."
+            elif missing_fields_list:
+                pooled_status = EvidenceStatus.PARTIALLY_SUFFICIENT
+                base_directive = (
+                    f"{target.target_entity} is recorded, but not found in records: "
+                    f"{human_missing_str}."
+                )
+            else:
+                pooled_status = EvidenceStatus.SUFFICIENT
+                base_directive = (
+                    "All requested information is recorded in your health context."
+                )
+        else:
+            # Attribute-only query
+            if not matched_fields_list:
+                pooled_status = EvidenceStatus.INSUFFICIENT
+                base_directive = f"No records contain: {human_missing_str}."
+            elif missing_fields_list:
+                pooled_status = EvidenceStatus.PARTIALLY_SUFFICIENT
+                base_directive = (
+                    f"Information partially found. Not found: {human_missing_str}."
+                )
+            else:
+                pooled_status = EvidenceStatus.SUFFICIENT
+                base_directive = (
+                    "All requested information is recorded in your health context."
+                )
+    elif entity_lower:
+        if pooled_records:
+            pooled_status = EvidenceStatus.SUFFICIENT
+            base_directive = f"Relevant records found for: {target.target_entity}."
+        else:
+            pooled_status = EvidenceStatus.INSUFFICIENT
+            base_directive = f"No records found matching: {target.target_entity}."
+    else:
+        # Generic query
+        if pooled_records:
+            pooled_status = EvidenceStatus.SUFFICIENT
+            base_directive = "Health records are available."
+        else:
+            pooled_status = EvidenceStatus.INSUFFICIENT
+            base_directive = "No health records found in context."
+
+    # Rule F: Non-Attribute Caveat Invariant:
+    non_attr_caveats = [
+        res
+        for res in domain_results
+        if res.status == EvidenceStatus.PARTIALLY_SUFFICIENT and not res.missing_fields
+    ]
+
+    if non_attr_caveats and pooled_status == EvidenceStatus.SUFFICIENT:
+        pooled_status = EvidenceStatus.PARTIALLY_SUFFICIENT
+
+    # Directives aggregation in deterministic candidate-domain order:
+    directives: list[str] = []
+    if missing_fields_list:
+        human_missing = [HUMAN_ATTRIBUTE_LABELS.get(a, a) for a in missing_fields_list]
+        human_missing_str = ", ".join(human_missing)
+        if target.target_entity:
+            directives.append(
+                f"{target.target_entity} is recorded, but not found in records: "
+                f"{human_missing_str}."
+            )
+        else:
+            directives.append(
+                f"Information partially found. Not found: {human_missing_str}."
+            )
+
+    for caveat in non_attr_caveats:
+        if caveat.evidence_directive and caveat.evidence_directive not in directives:
+            directives.append(caveat.evidence_directive)
+
+    final_directive = " ".join(directives) if directives else base_directive
+
+    return EvidenceResult(
+        status=pooled_status,
+        matched_records=pooled_records,
+        matched_fields=matched_fields_list,
+        missing_fields=missing_fields_list,
+        temporal_interpretation=target.temporal_scope,
+        evidence_directive=final_directive,
+    )
+
+
+def evaluate_evidence(
+    target: InquiryTarget, context: StructuredHealthContext
+) -> EvidenceResult:
+    """Evaluates query against context across all candidate structured domains.
+
+    Dispatches to evaluate_timeline_evidence when 'timeline' is present.
+    Pools multi-domain evidence while strictly preserving the M5 truth table
+    and Rule F.
+    """
+    candidate_domains = (
+        target.candidate_structured_domains
+        if target.candidate_structured_domains
+        else ([target.target_domain] if target.target_domain else [])
+    )
+
+    if not candidate_domains:
+        return EvidenceResult(
+            status=EvidenceStatus.INSUFFICIENT,
+            evidence_directive="Domain not recorded in health context.",
+        )
+
+    # 1. Single-domain execution (preserves exact M1-M5 baseline behavior)
+    if len(candidate_domains) == 1:
+        domain = candidate_domains[0]
+        if domain == "timeline":
+            return evaluate_timeline_evidence(target, context)
+        return _evaluate_single_structured_domain(domain, target, context)
+
+    # 2. Multi-domain structured execution (e.g. ["timeline", "conditions"])
+    domain_results: list[EvidenceResult] = []
+    for domain in candidate_domains:
+        if domain == "timeline":
+            res = evaluate_timeline_evidence(target, context)
+            domain_results.append(res)
+        elif hasattr(context, domain):
+            res = _evaluate_single_structured_domain(domain, target, context)
+            domain_results.append(res)
+
+    if not domain_results:
+        return EvidenceResult(
+            status=EvidenceStatus.INSUFFICIENT,
+            evidence_directive="No candidate domains recorded in health context.",
+        )
+
+    # Pool evidence preserving M5 sufficiency rules and Rule F
+    return _pool_structured_evidence(target, domain_results)
 
 
 # ---------------------------------------------------------------------------

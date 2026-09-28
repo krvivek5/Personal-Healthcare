@@ -139,7 +139,7 @@ async def build_inquiry_context(
         goals = [GoalResponse.model_validate(g) for g in goals_db]
 
     # 7. Fetch Timeline
-    if domains is None:
+    if domains is None or "timeline" in domains:
         timeline_events = await get_timeline(db, patient_id)
 
     return StructuredHealthContext(

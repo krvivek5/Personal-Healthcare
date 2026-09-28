@@ -1,3 +1,4 @@
+import uuid
 from datetime import date, datetime
 from enum import Enum
 from typing import Any, Optional
@@ -6,6 +7,30 @@ from uuid import UUID
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.schemas.provenance import VerificationState
+from app.schemas.timeline import HealthEvent
+
+
+def generate_timeline_event_id(
+    source_type: str,
+    source_id: uuid.UUID,
+    event_type: str,
+) -> uuid.UUID:
+    """Generate stable, deterministic UUID5 for a timeline event projection."""
+    identity_str = f"timeline:{source_type}:{source_id}:{event_type}"
+    return uuid.uuid5(uuid.NAMESPACE_URL, identity_str)
+
+
+class TimelineEventEvidence(HealthEvent):
+    """
+    Inquiry-specific evidence wrapper for HealthEvent projections.
+    Provides deterministic UUID5 identity for evidence evaluation and citation tracking.
+    """
+
+    @property
+    def id(self) -> uuid.UUID:
+        return generate_timeline_event_id(
+            self.source_type, self.source_id, self.event_type
+        )
 
 
 class EvidenceStatus(str, Enum):

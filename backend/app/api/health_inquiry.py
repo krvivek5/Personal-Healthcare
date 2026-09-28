@@ -34,6 +34,7 @@ from app.schemas.inquiry import (
     HealthInquiryResponse,
     InquiryCitation,
     TemporalScope,
+    generate_timeline_event_id,
 )
 from app.schemas.provenance import VerificationState
 
@@ -130,6 +131,21 @@ def _build_record_map(
                 label,
                 VerificationState.SOURCE_RECORDED,
             )
+
+    # M6 S3: timeline event evidence contexts — keyed by deterministic UUID5.
+    for event in context.recent_timeline_events:
+        event_id = generate_timeline_event_id(
+            event.source_type,
+            event.source_id,
+            event.event_type,
+        )
+        event_title = event.event_type.replace("_", " ").title()
+        label = f"{event.title} ({event_title}) - {event.event_date}"
+        record_map[event_id] = (
+            "TIMELINE",
+            label,
+            VerificationState.SOURCE_RECORDED,
+        )
 
     return record_map
 
@@ -418,6 +434,7 @@ async def submit_health_inquiry(
 
     seen_tokens: set[str] = set()
     seen_structured_ids: set[uuid.UUID] = set()
+    seen_timeline_ids: set[uuid.UUID] = set()
 
     for rid, token in zip(
         synthesis_result.cited_record_ids, synthesis_result.cited_tokens
@@ -426,6 +443,10 @@ async def submit_health_inquiry(
             if token in seen_tokens:
                 continue
             seen_tokens.add(token)
+        elif rid in record_map and record_map[rid][0] == "TIMELINE":
+            if rid in seen_timeline_ids:
+                continue
+            seen_timeline_ids.add(rid)
         else:
             if rid in seen_structured_ids:
                 continue
