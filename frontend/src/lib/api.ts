@@ -513,9 +513,19 @@ export const timelineApi = {
 
 // ─── Health Inquiry Domain Types & API ────────────────────────────────────────
 
+export type InquiryCitationEntityType =
+  | 'DOCUMENT'
+  | 'CONDITION'
+  | 'MEDICATION'
+  | 'ALLERGY'
+  | 'SYMPTOM'
+  | 'GOAL'
+  | 'PROFILE'
+  | 'TIMELINE'
+
 export interface InquiryCitation {
   citation_id: number
-  entity_type: string
+  entity_type: InquiryCitationEntityType
   record_id: string
   label: string
   verification_state: string
@@ -542,6 +552,7 @@ export interface HealthInquiryResponse {
   citations: InquiryCitation[]
   safety: SafetyGuardrailState
   generated_at: string
+  clarification_required?: boolean
 }
 
 export const healthInquiryApi = {

@@ -2,6 +2,31 @@ import React, { useState } from 'react'
 import { useAuth } from '../context/AuthContext'
 import { healthInquiryApi, documentsApi, HealthInquiryResponse, ApiError } from '../lib/api'
 
+const RECOGNIZED_VERIFICATION_STATES = new Set([
+  'PATIENT_REPORTED',
+  'SOURCE_RECORDED',
+  'CLINICIAN_CONFIRMED',
+  'AI_DERIVED',
+  'UNCERTAIN',
+])
+
+function normalizeVerificationState(state?: string | null): string {
+  if (!state || !state.trim()) {
+    return 'UNCERTAIN'
+  }
+  const trimmed = state.trim()
+  if (RECOGNIZED_VERIFICATION_STATES.has(trimmed)) {
+    return trimmed
+  }
+  return 'UNCERTAIN'
+}
+
+const EVIDENCE_STATUS_STYLES: Record<string, { background: string; color: string; border: string }> = {
+  SUFFICIENT: { background: '#f1f5f9', color: '#334155', border: '1px solid #cbd5e1' },
+  PARTIALLY_SUFFICIENT: { background: '#fffbeb', color: '#92400e', border: '1px solid #fcd34d' },
+  INSUFFICIENT: { background: '#fff1f2', color: '#9f1239', border: '1px solid #fecdd3' },
+}
+
 export const HealthInquiryView: React.FC = () => {
   const { session } = useAuth()
   const [query, setQuery] = useState('')
@@ -135,9 +160,9 @@ export const HealthInquiryView: React.FC = () => {
                   fontSize: '0.8rem',
                   fontWeight: 600,
                   borderRadius: '4px',
-                  background: '#f1f5f9',
-                  color: '#475569',
-                  border: '1px solid #cbd5e1'
+                  background: EVIDENCE_STATUS_STYLES[response.evidence_status]?.background ?? '#f1f5f9',
+                  color: EVIDENCE_STATUS_STYLES[response.evidence_status]?.color ?? '#475569',
+                  border: EVIDENCE_STATUS_STYLES[response.evidence_status]?.border ?? '1px solid #cbd5e1',
                 }}
               >
                 {response.evidence_status.replace('_', ' ')}
@@ -145,7 +170,17 @@ export const HealthInquiryView: React.FC = () => {
             </div>
 
             {/* Answer */}
-            <div data-testid="inquiry-answer" style={{ fontSize: '1.1rem', color: '#1e293b', lineHeight: '1.6', marginBottom: '1.5rem', whiteSpace: 'pre-wrap' }}>
+            <div
+              data-testid="inquiry-answer"
+              style={{
+                fontSize: '1.1rem',
+                color: '#1e293b',
+                lineHeight: '1.6',
+                marginBottom: '1.5rem',
+                whiteSpace: 'pre-wrap',
+                wordBreak: 'break-word',
+              }}
+            >
               {response.answer}
             </div>
 
@@ -156,6 +191,130 @@ export const HealthInquiryView: React.FC = () => {
                 <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
                   {response.citations.map((citation) => {
                     const isDocument = citation.entity_type === 'DOCUMENT'
+                    const isTimeline = citation.entity_type === 'TIMELINE'
+
+                    if (isTimeline) {
+                      const isExpandedDetails = expandedDetailsCitationId === citation.citation_id
+                      const displayVerificationState = normalizeVerificationState(citation.verification_state)
+                      const displayLabel = citation.label?.trim() || 'Timeline Event'
+                      const displayRecordId = citation.record_id?.trim() || 'not recorded'
+
+                      return (
+                        <li
+                          key={`citation-${citation.citation_id}`}
+                          data-testid={`citation-${citation.citation_id}`}
+                          style={{ listStyle: 'none' }}
+                        >
+                          <div
+                            data-testid={`timeline-citation-card-${citation.citation_id}`}
+                            style={{
+                              border: '1px solid #cbd5e1',
+                              borderLeft: '4px solid #8b5cf6',
+                              borderRadius: '8px',
+                              padding: '1rem',
+                              background: '#ffffff',
+                              boxShadow: '0 1px 3px 0 rgba(0, 0, 0, 0.05)',
+                            }}
+                          >
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '0.5rem' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                                <span
+                                  data-testid={`citation-token-${citation.citation_id}`}
+                                  style={{
+                                    color: '#6d28d9',
+                                    fontWeight: 700,
+                                    fontSize: '0.95rem',
+                                    background: '#ede9fe',
+                                    padding: '0.2rem 0.5rem',
+                                    borderRadius: '4px',
+                                  }}
+                                >
+                                  [{citation.citation_id}]
+                                </span>
+                                <span
+                                  data-testid={`citation-type-${citation.citation_id}`}
+                                  style={{
+                                    background: '#f3e8ff',
+                                    color: '#6b21a8',
+                                    fontSize: '0.75rem',
+                                    fontWeight: 600,
+                                    padding: '0.2rem 0.4rem',
+                                    borderRadius: '4px',
+                                    border: '1px solid #d8b4fe',
+                                    textTransform: 'uppercase',
+                                  }}
+                                >
+                                  TIMELINE
+                                </span>
+                                <span
+                                  data-testid={`citation-state-${citation.citation_id}`}
+                                  style={{
+                                    background: '#ecfdf5',
+                                    color: '#047857',
+                                    fontSize: '0.75rem',
+                                    fontWeight: 600,
+                                    padding: '0.2rem 0.4rem',
+                                    borderRadius: '4px',
+                                    border: '1px solid #a7f3d0',
+                                  }}
+                                >
+                                  {displayVerificationState.replace(/_/g, ' ')}
+                                </span>
+                              </div>
+
+                              <button
+                                type="button"
+                                data-testid={`inspect-details-btn-${citation.citation_id}`}
+                                aria-expanded={isExpandedDetails}
+                                aria-label={`Inspect details for citation ${citation.citation_id}`}
+                                onClick={() => setExpandedDetailsCitationId(isExpandedDetails ? null : citation.citation_id)}
+                                style={{
+                                  background: 'transparent',
+                                  color: '#475569',
+                                  border: '1px solid #cbd5e1',
+                                  padding: '0.35rem 0.75rem',
+                                  borderRadius: '4px',
+                                  fontSize: '0.8rem',
+                                  cursor: 'pointer',
+                                  fontWeight: 500,
+                                }}
+                              >
+                                {isExpandedDetails ? 'Hide Details' : 'Inspect Details'}
+                              </button>
+                            </div>
+
+                            <div
+                              data-testid={`timeline-citation-label-${citation.citation_id}`}
+                              style={{ marginTop: '0.75rem', color: '#1e293b', fontWeight: 500, fontSize: '0.95rem' }}
+                            >
+                              {displayLabel}
+                            </div>
+
+                            {isExpandedDetails && (
+                              <div
+                                data-testid={`citation-details-${citation.citation_id}`}
+                                style={{
+                                  marginTop: '0.75rem',
+                                  paddingTop: '0.75rem',
+                                  borderTop: '1px dashed #e2e8f0',
+                                  fontSize: '0.85rem',
+                                  color: '#64748b',
+                                  display: 'flex',
+                                  flexDirection: 'column',
+                                  gap: '0.25rem',
+                                }}
+                              >
+                                <div><strong>Timeline Event:</strong> {displayLabel}</div>
+                                <div><strong>Timeline ID:</strong> <code style={{ color: '#0f172a' }}>{displayRecordId}</code></div>
+                                <div><strong>Entity Type:</strong> {citation.entity_type}</div>
+                                <div><strong>Verification State:</strong> {displayVerificationState}</div>
+                              </div>
+                            )}
+                          </div>
+                        </li>
+                      )
+                    }
+
                     if (!isDocument) {
                       return (
                         <li key={`citation-${citation.citation_id}`} data-testid={`citation-${citation.citation_id}`} style={{ display: 'flex', alignItems: 'flex-start', gap: '0.5rem', fontSize: '0.9rem' }}>
