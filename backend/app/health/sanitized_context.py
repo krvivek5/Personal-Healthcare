@@ -6,7 +6,12 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
+from app.health.evidence_evaluator import (
+    extract_canonical_clinical_date,
+    get_candidate_sort_key,
+)
 from app.health.inquiry_context import StructuredHealthContext
+from app.health.retrieval import RetrievedPassage
 from app.schemas.inquiry import InquiryTarget
 
 UUID_REGEX = re.compile(
@@ -92,6 +97,8 @@ class SanitizedHealthContext(BaseModel):
     # Keys: both "[DOC-N]" and "DOC-N" for backward-compatible reconciliation.
     # Values: PassageProvenance with chunk-level attribution for S6 citations.
     passage_map: dict[str, PassageProvenance] = Field(default_factory=dict)
+    # S4 extension: chronologically ordered trajectory statements
+    chronological_trajectory: list[str] = Field(default_factory=list)
 
     def to_llm_payload(self) -> dict[str, Any]:
         """
@@ -108,6 +115,7 @@ class SanitizedHealthContext(BaseModel):
                 }
                 for r in self.records
             ],
+            "chronological_trajectory": self.chronological_trajectory,
         }
         if self.profile:
             payload["profile"] = self.profile
@@ -198,6 +206,13 @@ class SanitizedHealthContext(BaseModel):
             # Header on its own line, then blocks separated by a blank line.
             lines.append("=== RETRIEVED PASSAGES ===\n" + "\n\n".join(passage_blocks))
 
+        # S4: Append chronological trajectory block if non-empty
+        if self.chronological_trajectory:
+            lines.append(
+                "=== CHRONOLOGICAL TRAJECTORY ===\n"
+                + "\n".join(self.chronological_trajectory)
+            )
+
         return "\n".join(lines)
 
 
@@ -248,9 +263,136 @@ def reconcile_reference_tokens(
     return resolved_ids
 
 
+def _sanitize_trajectory_text(text: str) -> str:
+    """
+    Sanitize text for trajectory summary line:
+    - Replaces newlines, carriage returns, and tabs with single spaces.
+    - Strips prompt delimiters and control markers
+      (===, ---, ###, System:, Human:, Instruction:).
+    - Collapses consecutive whitespace and strips ends.
+    - Neutralizes structural prompt delimiters and control markers, preventing
+      candidate text from creating fake prompt sections or spoofing tokens.
+      (Generic natural-language prompt injection is not claimed to be completely
+      eliminated by this structural sanitizer alone).
+    """
+    if not text:
+        return ""
+    clean = re.sub(r"[=\-#]{3,}", " ", str(text))
+    clean = re.sub(r"(?i)\b(system|human|assistant|instruction):", " ", clean)
+    clean = re.sub(r"\[(REC|DOC)-\d+\]", " ", clean)
+    clean = re.sub(r"\s+", " ", clean).strip()
+    return clean
+
+
+def format_trajectory_item_description(candidate: Any) -> str:
+    """
+    Generates a compact human-readable trajectory description per provenance class.
+    Zero internal database UUIDs or patient IDs.
+
+    Primary mapping uses authoritative repository fields from
+    backend/app/db/models.py, with safe fallback chains for fixture compatibility:
+    1. DOCUMENT (RetrievedPassage):
+       - Primary: display name or title or "Clinical Document"
+       - Chunk index: passage.chunk_index
+       - Full text remains exclusively in === RETRIEVED PASSAGES ===
+    2. TIMELINE (TimelineEventEvidence):
+       - Sanitized event description: _sanitize_trajectory_text(event.description)
+    3. STRUCTURED (relational Condition, Medication, Symptom, and LabResult):
+       - LabResult: f"{test_name}: {value} {unit}".strip()
+       - Medication: f"{med.name} {med.dosage or ''}".strip()
+       - Symptom: f"{symp.name} (Severity: {symp.severity or 'Not specified'})"
+       - Condition: f"{cond.name} (Status: {cond.status or 'Active'})"
+    """
+    if isinstance(candidate, RetrievedPassage) or hasattr(candidate, "chunk_index"):
+        title = (
+            getattr(candidate, "document_display_name", None)
+            or getattr(candidate, "document_title", None)
+            or getattr(candidate, "display_name", None)
+            or "Clinical Document"
+        )
+        chunk_idx = getattr(candidate, "chunk_index", 0)
+        return _sanitize_trajectory_text(f"{title} - Chunk {chunk_idx}")
+
+    if hasattr(candidate, "event_type") and hasattr(candidate, "description"):
+        return _sanitize_trajectory_text(candidate.description)
+
+    # Evaluator/fixture LabResult compatibility (test_name, value, unit)
+    if hasattr(candidate, "test_name"):
+        val = getattr(candidate, "value", "")
+        unit = getattr(candidate, "unit", "")
+        val_str = f"{val} {unit}".strip() if unit else str(val).strip()
+        return _sanitize_trajectory_text(f"{candidate.test_name}: {val_str}".strip())
+
+    # Medication (authoritative fields: name, dosage; fixture fallback: medication_name)
+    if hasattr(candidate, "dosage") or hasattr(candidate, "medication_name"):
+        med_name = getattr(candidate, "name", None) or getattr(
+            candidate, "medication_name", "Medication"
+        )
+        dosage = getattr(candidate, "dosage", "") or ""
+        return _sanitize_trajectory_text(f"{med_name} {dosage}".strip())
+
+    # Symptom (authoritative fields: name, severity; fixture fallback: symptom_name)
+    if hasattr(candidate, "severity") or hasattr(candidate, "symptom_name"):
+        symp_name = getattr(candidate, "name", None) or getattr(
+            candidate, "symptom_name", "Symptom"
+        )
+        sev = getattr(candidate, "severity", "Not specified") or "Not specified"
+        return _sanitize_trajectory_text(f"{symp_name} (Severity: {sev})")
+
+    # Condition (authoritative fields: name, status; fixture fallbacks)
+    if (
+        hasattr(candidate, "status")
+        or hasattr(candidate, "condition_name")
+        or hasattr(candidate, "clinical_status")
+    ):
+        cond_name = getattr(candidate, "name", None) or getattr(
+            candidate, "condition_name", "Condition"
+        )
+        status_val = (
+            getattr(candidate, "status", None)
+            or getattr(candidate, "clinical_status", "Active")
+            or "Active"
+        )
+        return _sanitize_trajectory_text(f"{cond_name} (Status: {status_val})")
+
+    name = getattr(candidate, "name", "Record")
+    return _sanitize_trajectory_text(str(name))
+
+
+def _get_domain_tag(candidate: Any) -> str:
+    if isinstance(candidate, RetrievedPassage) or hasattr(candidate, "chunk_index"):
+        doc_type = getattr(candidate, "document_type", None) or "DOCUMENT"
+        return f"DOCUMENT: {doc_type.upper()}"
+
+    if hasattr(candidate, "event_type") and hasattr(candidate, "description"):
+        source_type = getattr(candidate, "source_type", None) or getattr(
+            candidate, "event_type", "EVENT"
+        )
+        return f"TIMELINE: {str(source_type).upper()}"
+
+    if hasattr(candidate, "test_name"):
+        return "STRUCTURED: LAB"
+    if hasattr(candidate, "dosage") or hasattr(candidate, "medication_name"):
+        return "STRUCTURED: MEDICATION"
+    if hasattr(candidate, "severity") or hasattr(candidate, "symptom_name"):
+        return "STRUCTURED: SYMPTOM"
+    if hasattr(candidate, "allergen"):
+        return "STRUCTURED: ALLERGY"
+    if (
+        hasattr(candidate, "status")
+        or hasattr(candidate, "condition_name")
+        or hasattr(candidate, "clinical_status")
+    ):
+        return "STRUCTURED: CONDITION"
+    if hasattr(candidate, "entity_type"):
+        return f"STRUCTURED: {str(candidate.entity_type).upper()}"
+    return "STRUCTURED: RECORD"
+
+
 def build_sanitized_context(
     context: StructuredHealthContext,
     target: Optional[InquiryTarget] = None,
+    evidence: Optional[Any] = None,
 ) -> SanitizedHealthContext:
     """
     Serializes a StructuredHealthContext into a sanitized, tokenized representation.
@@ -534,9 +676,9 @@ def build_sanitized_context(
     # On INSUFFICIENT evidence the caller leaves context.passages empty,
     # so passage_map is empty and the serialized block is omitted.
     passage_map: dict[str, PassageProvenance] = {}
+    passage_counter = 1
 
     if context.passages:
-        passage_counter = 1
         for pec in context.passages[:MAX_RETRIEVED_PASSAGES]:
             token = f"[DOC-{passage_counter}]"
             token_clean = f"DOC-{passage_counter}"
@@ -565,10 +707,76 @@ def build_sanitized_context(
 
             passage_counter += 1
 
+    # 11. Chronological Trajectory Serialization (M6 Slice 4)
+    # Scoped strictly to milestone evidence: matched_records and qualified_passages.
+    trajectory_lines: list[str] = []
+    if evidence is not None and (
+        getattr(evidence, "matched_records", None)
+        or getattr(evidence, "qualified_passages", None)
+    ):
+        raw_struct = getattr(evidence, "matched_records", []) or []
+        raw_docs = getattr(evidence, "qualified_passages", []) or []
+        items = list(raw_struct) + list(raw_docs)
+        items.sort(
+            key=lambda c: (
+                extract_canonical_clinical_date(c) or date.min,
+                *get_candidate_sort_key(c),
+            )
+        )
+
+        # Build reverse lookup maps for tokens
+        rec_id_to_token: dict[Any, str] = {}
+        for tok, r_id in reference_map.items():
+            if tok.startswith("[REC-"):
+                rec_id_to_token[r_id] = tok
+
+        # Build passage provenance lookup: (document_id, chunk_index) -> token
+        doc_prov_to_token: dict[tuple[Any, Any], str] = {}
+        for tok, prov in passage_map.items():
+            if tok.startswith("[DOC-"):
+                doc_prov_to_token[(prov.document_id, prov.chunk_index)] = tok
+
+        for item in items:
+            canon_date = extract_canonical_clinical_date(item)
+            date_str = canon_date.isoformat() if canon_date else "not recorded"
+            domain_tag = _get_domain_tag(item)
+            desc = format_trajectory_item_description(item)
+
+            # Determine reference token
+            token = None
+            if hasattr(item, "token") and getattr(item, "token"):
+                token = getattr(item, "token")
+            elif isinstance(item, RetrievedPassage) or hasattr(item, "chunk_index"):
+                doc_id = getattr(item, "document_id", None)
+                chunk_idx = getattr(item, "chunk_index", None)
+                token = doc_prov_to_token.get((doc_id, chunk_idx))
+                if not token:
+                    for tok, r_id in reference_map.items():
+                        if tok.startswith("[DOC-") and r_id == doc_id:
+                            token = tok
+                            break
+                if not token:
+                    token = f"[DOC-{passage_counter}]"
+                    passage_counter += 1
+            else:
+                item_id = getattr(item, "id", None)
+                source_id = getattr(item, "source_id", None)
+                token = rec_id_to_token.get(source_id) or rec_id_to_token.get(item_id)
+                if not token:
+                    token = f"[REC-{counter}]"
+                    counter += 1
+
+            clean_tok = token.strip("[]")
+            bracketed_tok = f"[{clean_tok}]"
+            trajectory_lines.append(
+                f"- [{date_str}] [{domain_tag}] {desc} {bracketed_tok}"
+            )
+
     return SanitizedHealthContext(
         profile=sanitized_profile,
         records=records,
         reference_map=reference_map,
         included_domains=included_domains,
         passage_map=passage_map,
+        chronological_trajectory=trajectory_lines,
     )

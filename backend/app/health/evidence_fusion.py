@@ -1,7 +1,19 @@
 import logging
+from datetime import date
+from typing import Any, Optional
 
-from app.health.evidence_evaluator import HUMAN_ATTRIBUTE_LABELS, EvidenceResult
-from app.schemas.inquiry import EvidenceStatus, InquiryTarget
+from app.health.evidence_evaluator import (
+    HUMAN_ATTRIBUTE_LABELS,
+    EvidenceResult,
+    _qualifies_for_superlative,
+    allocate_superlative_document_passages,
+    evaluate_longitudinal_trajectory,
+    extract_canonical_clinical_date,
+    get_candidate_sort_key,
+    resolve_superlative_attribute_status,
+)
+from app.health.retrieval import RetrievedPassage
+from app.schemas.inquiry import EvidenceStatus, InquiryTarget, SuperlativeType
 
 logger = logging.getLogger(__name__)
 
@@ -10,12 +22,152 @@ def fuse_cross_domain_evidence(
     target: InquiryTarget,
     struct_evidence: EvidenceResult,
     doc_evidence: EvidenceResult,
+    structured_candidates: Optional[list[Any]] = None,
+    document_candidates: Optional[list[RetrievedPassage]] = None,
 ) -> EvidenceResult:
-    """
-    Pure-function module to fuse evidence from structured health records
+    """Pure-function module to fuse evidence from structured health records
     and unstructured documents.
-    Implements the 7-case truth table for cross-domain evidence sufficiency.
+    Implements the 7-case truth table for cross-domain evidence sufficiency,
+    cross-domain comparison longitudinal trajectory delegation, and
+    cross-domain superlative reconciliation under Zero Silent Supersession.
     """
+    is_comparison = target.question_intent == "COMPARISON"
+    is_superlative = bool(
+        target.temporal_constraint
+        and target.temporal_constraint.superlative
+        in (SuperlativeType.LATEST, SuperlativeType.FIRST)
+    )
+
+    # Invariant: COMPARISON and CROSS_DOMAIN SUPERLATIVES mandate candidate pools
+    if is_comparison or is_superlative:
+        if structured_candidates is None or document_candidates is None:
+            intent_label = "comparison" if is_comparison else "superlative"
+            raise ValueError(
+                f"Cross-domain {intent_label} resolution requires full untruncated "
+                "structured_candidates and document_candidates. Silent fallback "
+                "to pre-truncated single-domain EvidenceResult evidence is forbidden."
+            )
+
+    if is_comparison:
+        return evaluate_longitudinal_trajectory(
+            structured_candidates=structured_candidates,
+            document_candidates=document_candidates,
+            target=target,
+        )
+
+    if is_superlative:
+        superlative = target.temporal_constraint.superlative
+
+        # 1. Superlative Semantic Qualification Preceding Recency Ranking
+        qual_struct = [
+            r for r in structured_candidates if _qualifies_for_superlative(r, target)
+        ]
+        qual_docs = [
+            p for p in document_candidates if _qualifies_for_superlative(p, target)
+        ]
+
+        # 2. Extract Canonical Clinical Dates
+        struct_dates = {
+            extract_canonical_clinical_date(r)
+            for r in qual_struct
+            if extract_canonical_clinical_date(r) is not None
+        }
+        doc_dates = {
+            extract_canonical_clinical_date(p)
+            for p in qual_docs
+            if extract_canonical_clinical_date(p) is not None
+        }
+        all_dates = struct_dates.union(doc_dates)
+
+        if not all_dates:
+            qual_struct_sorted = sorted(qual_struct, key=get_candidate_sort_key)
+            retained_docs = allocate_superlative_document_passages(
+                winning_date=None,
+                passages=qual_docs,
+                superlative=superlative,
+            )
+            has_matching = bool(qual_struct or qual_docs)
+            entity_label = target.target_entity or "health"
+            query_label = target.target_entity or "health query"
+            return EvidenceResult(
+                status=(
+                    EvidenceStatus.PARTIALLY_SUFFICIENT
+                    if has_matching
+                    else EvidenceStatus.INSUFFICIENT
+                ),
+                matched_records=qual_struct_sorted,
+                qualified_passages=retained_docs,
+                matched_fields=[],
+                missing_fields=(
+                    list(target.requested_attributes)
+                    if target.requested_attributes
+                    else []
+                ),
+                temporal_interpretation="superlative",
+                evidence_directive=(
+                    f"Identified {entity_label} records, but no verifiable clinical "
+                    "dates were recorded to establish recency."
+                    if has_matching
+                    else f"No records found for {query_label}."
+                ),
+            )
+
+        winning_date = (
+            max(all_dates) if superlative == SuperlativeType.LATEST else min(all_dates)
+        )
+
+        retained_struct = sorted(
+            qual_struct,
+            key=lambda c: (
+                extract_canonical_clinical_date(c) or date.min,
+                *get_candidate_sort_key(c),
+            ),
+        )
+        retained_docs = allocate_superlative_document_passages(
+            winning_date=winning_date,
+            passages=qual_docs,
+            superlative=superlative,
+        )
+
+        full_win_evidence = [
+            c
+            for c in (qual_struct + qual_docs)
+            if extract_canonical_clinical_date(c) == winning_date
+        ]
+        serialized_win_evidence = [
+            c
+            for c in (retained_struct + retained_docs)
+            if extract_canonical_clinical_date(c) == winning_date
+        ]
+
+        direction_word = (
+            "Most recent" if superlative == SuperlativeType.LATEST else "Earliest"
+        )
+        entity_name = target.target_entity or "health"
+        win_iso = winning_date.isoformat()
+        base_directive = (
+            f"{direction_word} {entity_name} record identified on {win_iso}."
+        )
+
+        status, matched_fields, missing_fields, directive = (
+            resolve_superlative_attribute_status(
+                full_win_evidence=full_win_evidence,
+                serialized_win_evidence=serialized_win_evidence,
+                target=target,
+                base_directive=base_directive,
+                winning_date=winning_date,
+            )
+        )
+
+        return EvidenceResult(
+            status=status,
+            matched_records=retained_struct,
+            qualified_passages=retained_docs,
+            matched_fields=matched_fields,
+            missing_fields=missing_fields,
+            temporal_interpretation="superlative",
+            evidence_directive=directive,
+        )
     has_entity = bool(target.target_entity)
     has_attrs = bool(target.requested_attributes)
 

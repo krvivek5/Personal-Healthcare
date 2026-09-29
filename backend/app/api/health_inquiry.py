@@ -11,6 +11,9 @@ from app.core.llm import LLMProvider
 from app.core.llm_gateway import get_llm_gateway
 from app.db.session import get_db
 from app.health.evidence_evaluator import (
+    BOUNDED_TRAJECTORY_QUALIFIER,
+    TrajectoryCompleteness,
+    collect_relevant_candidates,
     evaluate_evidence,
     evaluate_passage_evidence,
 )
@@ -34,6 +37,7 @@ from app.schemas.inquiry import (
     HealthInquiryResponse,
     InquiryCitation,
     TemporalScope,
+    TimelineEventEvidence,
     generate_timeline_event_id,
 )
 from app.schemas.provenance import VerificationState
@@ -273,7 +277,10 @@ async def submit_health_inquiry(
                 for p in evidence.qualified_passages
             ]
 
-        sanitized_context = build_sanitized_context(context, target)
+        if evidence.status != EvidenceStatus.INSUFFICIENT:
+            sanitized_context = build_sanitized_context(
+                context, target, evidence=evidence
+            )
 
     elif target.routing_mode == RoutingMode.CROSS_DOMAIN:
         # ---------------------------------------------------------------
@@ -335,10 +342,36 @@ async def submit_health_inquiry(
                 detail="Failed to retrieve document evidence.",
             )
 
+        struct_pool = []
+        if context.profile:
+            struct_pool.append(context.profile)
+        struct_pool.extend(context.conditions)
+        struct_pool.extend(context.medications)
+        struct_pool.extend(context.allergies)
+        struct_pool.extend(context.symptoms)
+        struct_pool.extend(context.goals)
+        for e in context.recent_timeline_events:
+            if getattr(e, "event_type", None) != "DOCUMENT_UPLOADED":
+                struct_pool.append(
+                    TimelineEventEvidence(**e.model_dump())
+                    if not isinstance(e, TimelineEventEvidence)
+                    else e
+                )
+        relevant_struct = collect_relevant_candidates(struct_pool, target)
+        relevant_docs = collect_relevant_candidates(
+            list(retrieval_result.passages), target
+        )
+
         struct_evidence = evaluate_evidence(target, context)
         doc_evidence = evaluate_passage_evidence(target, retrieval_result, patient.id)
 
-        evidence = fuse_cross_domain_evidence(target, struct_evidence, doc_evidence)
+        evidence = fuse_cross_domain_evidence(
+            target=target,
+            struct_evidence=struct_evidence,
+            doc_evidence=doc_evidence,
+            structured_candidates=relevant_struct,
+            document_candidates=relevant_docs,
+        )
 
         if (
             evidence.status != EvidenceStatus.INSUFFICIENT
@@ -361,7 +394,9 @@ async def submit_health_inquiry(
             ]
 
         if evidence.status != EvidenceStatus.INSUFFICIENT:
-            sanitized_context = build_sanitized_context(context, target)
+            sanitized_context = build_sanitized_context(
+                context, target, evidence=evidence
+            )
 
     else:
         # ---------------------------------------------------------------
@@ -388,6 +423,10 @@ async def submit_health_inquiry(
             )
 
         evidence = evaluate_evidence(target, context)
+        if evidence.status != EvidenceStatus.INSUFFICIENT:
+            sanitized_context = build_sanitized_context(
+                context, target, evidence=evidence
+            )
 
     # 7. Short-circuit: insufficient evidence — no LLM call.
     if evidence.status == EvidenceStatus.INSUFFICIENT:
@@ -483,9 +522,19 @@ async def submit_health_inquiry(
         citation_id_counter += 1
 
     # 10. Return Grounded Response
+    final_answer = synthesis_result.answer_text
+    if (
+        evidence.trajectory_completeness
+        == TrajectoryCompleteness.BOUNDED_WITH_ADDITIONAL_QUALIFIED_CANDIDATES
+    ):
+        if BOUNDED_TRAJECTORY_QUALIFIER not in final_answer:
+            final_answer = (
+                f"{final_answer.rstrip()}\n\n{BOUNDED_TRAJECTORY_QUALIFIER}".strip()
+            )
+
     return HealthInquiryResponse(
         query=request.query,
-        answer=synthesis_result.answer_text,
+        answer=final_answer,
         evidence_status=evidence.status,
         citations=verified_citations,
         safety=safety_state,
